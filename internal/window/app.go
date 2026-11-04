@@ -118,7 +118,8 @@ func Run(dir string, logf func(string, ...any)) int {
 
 	// Window style: WS_OVERLAPPEDWINDOW without WS_MINIMIZEBOX (close button will minimize to tray)
 	// WS_EX_APPWINDOW is NOT set, so the window won't appear in the taskbar
-	wsStyle := uintptr(wsOverlappedWindow &^ wsMinimizeBox)
+	// wsClipChildren is required for proper child window layout/resizing
+	wsStyle := uintptr(wsOverlappedWindow &^ wsMinimizeBox | wsClipChildren)
 	wsExStyle := uintptr(wsExNoParentNotify) // no WS_EX_APPWINDOW
 
 	hwnd, _, _ := pCreateWindowEx.Call(wsExStyle, uintptr(unsafe.Pointer(utf16("TCVMain"))),
