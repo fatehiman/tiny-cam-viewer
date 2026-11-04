@@ -34,12 +34,34 @@ rtsp://admin:YOUR_PASSWORD@192.168.1.20:554/Streaming/Channels/101
 - `cameras.conf` contains passwords. It is in `.gitignore`. Never commit it. Passwords are hidden in the log file.
 - `cameras.conf.example` in the repository is only a sample.
 
+### Two streams per camera: `{normal:X}` and `{full:X}`
+
+Many cameras have a small stream (sub stream) and a big stream (main stream, high resolution).
+Use the small one in the grid and the big one in fullscreen:
+
+```text
+rtsp://192.168.1.18:554/user=admin&password=YOUR_PASSWORD&channel=1&stream={normal:1}{full:2}.sdp?real_stream
+```
+
+This is only text replacement. The app makes two URLs from the line:
+
+| View | `{normal:X}` becomes | `{full:X}` becomes | Result for the example |
+|---|---|---|---|
+| Grid (thumbnail) | `X` | nothing | `...&stream=1.sdp?real_stream` |
+| Fullscreen | nothing | `X` | `...&stream=2.sdp?real_stream` |
+
+- You can write the markers anywhere in the line (channel, path, user name...) and as many times as you like.
+- `X` can be empty or any text, but it can not contain `{` or `}`. The words are not case sensitive.
+- A line **without** `{full:...}` uses one stream for both views (the old behavior).
+- If a line has `{full:...}` but no `{normal:...}`, the grid URL simply has nothing in that place.
+- Both URLs are checked. An invalid one shows an **Error** status in the cell.
+
 ## Using the app
 
 | Action | Result |
 |---|---|
-| Double-click a camera | That camera fills the whole window. The other cameras keep running (hidden). The stream is **not** restarted. |
-| Double-click again, or press `Esc` | Back to the 4×2 grid. |
+| Double-click a camera | That camera fills the whole window. The other cameras keep running (hidden). If the line has `{normal:X}{full:X}` markers, this camera switches to its fullscreen (high-resolution) stream, which takes a moment to connect. Without markers the stream is **not** restarted. |
+| Double-click again, or press `Esc` | Back to the 4×2 grid. The camera switches back to its grid stream. |
 | Minimize the window | The window hides. The app keeps running in the system tray. |
 | Left-click tray icon | Show or hide the window. |
 | Right-click tray icon | Menu: Show/Hide window, Reload cameras, Edit cameras.conf, **Exit**. |
@@ -108,7 +130,7 @@ No VLC and no other install is needed.
 ## How it works (short)
 
 - `main.go`: single instance, finds the program folder, loads `libmpv-2.dll`, starts the UI.
-- `internal/camera`: reads and validates `cameras.conf`; hides passwords for the log.
+- `internal/camera`: reads and validates `cameras.conf`; expands `{normal:X}`/`{full:X}`; hides passwords for the log.
 - `internal/player`: calls libmpv through `LoadLibrary` (no cgo). One `mpv_handle` and one goroutine per camera.
   The goroutine sleeps inside `mpv_wait_event` and wakes only for events. There is no polling.
   Video is decoded and rendered by libmpv on the GPU. No video frame is copied into Go memory.

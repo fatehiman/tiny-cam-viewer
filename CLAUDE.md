@@ -42,6 +42,11 @@ Test streams without cameras: run `mediamtx` and push test patterns:
   `demuxer-lavf-o=timeout=8000000` makes a dead camera fail after about 8 s instead of 60+ s.
 - **Hardware decoding check**: after the first frame, `hwdec-current` is read once (not polled) and shown as HW/SW.
 - **Fullscreen**: only moves/hides the `TCVCell` windows. Hidden players keep their RTSP session.
+- **Grid / fullscreen streams**: `camera.Expand` turns `{normal:X}` / `{full:X}` in a config line into two URLs
+  (`Entry.URL`, `Entry.FullURL`). Plain text replacement, no URL parsing. No `{full:` in the line -> `FullURL` is empty
+  and nothing changes. With a `FullURL`, `toggleFull` calls `Instance.SetFull`, which cancels a pending retry and
+  runs `loadfile ... replace` with the other URL (in a goroutine). One player per camera, so no extra RAM. Only the
+  fullscreen camera uses the big stream; the hidden ones stay on their grid streams.
 - **Minimize** hides the window to the tray (`wmSize` -> `SW_HIDE`).
 - **Exit**: `close()` hides the window, removes the tray icon, stops players in a goroutine
   (`quit` + `mpv_terminate_destroy`, in parallel), then `wmAppQuit` destroys the window.

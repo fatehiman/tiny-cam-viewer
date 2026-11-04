@@ -8,3 +8,8 @@
 #
 # rtsp://192.168.1.18:554/user=admin&password=YOUR_PASSWORD&channel=1&stream=1.sdp?real_stream
 # rtsp://admin:YOUR_PASSWORD@192.168.1.20:554/Streaming/Channels/101
+#
+# Two streams per camera: {normal:X} is used in the grid, {full:Y} is used when
+# the camera is shown fullscreen. They can be anywhere in the line.
+#
+# rtsp://192.168.1.18:554/user=admin&password=YOUR_PASSWORD&channel=1&stream={normal:1}{full:2}.sdp?real_stream

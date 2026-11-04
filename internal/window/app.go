@@ -256,9 +256,9 @@ func (a *app) startCameras() {
 			continue
 		}
 		a.starting.Add(1)
-		go func(idx int, url string, wid uintptr) {
+		go func(idx int, url, fullURL string, wid uintptr) {
 			defer a.starting.Done()
-			inst, err := player.New(idx, url, wid, a.scale, cb)
+			inst, err := player.New(idx, url, fullURL, wid, a.scale, cb)
 			a.mu.Lock()
 			if err != nil {
 				a.slots[idx].state, a.slots[idx].detail = player.Error, err.Error()
@@ -268,7 +268,7 @@ func (a *app) startCameras() {
 			}
 			a.mu.Unlock()
 			postMessage(a.hwnd, wmAppState, uintptr(idx), 0)
-		}(i, s.entry.URL, s.cell)
+		}(i, s.entry.URL, s.entry.FullURL, s.cell)
 	}
 }
 
@@ -399,9 +399,27 @@ func (a *app) toggleFull(idx int) {
 	if a.full == idx {
 		a.full = -1
 	} else {
+		if a.full >= 0 {
+			a.setSlotFull(a.full, false)
+		}
 		a.full = idx
 	}
+	if a.full >= 0 {
+		a.setSlotFull(a.full, true)
+	} else {
+		a.setSlotFull(idx, false)
+	}
 	a.layout()
+}
+
+// setSlotFull tells a player to use its fullscreen or its grid stream.
+func (a *app) setSlotFull(idx int, full bool) {
+	a.mu.Lock()
+	inst := a.slots[idx].inst
+	a.mu.Unlock()
+	if inst != nil {
+		inst.SetFull(full)
+	}
 }
 
 // ---- window procedures ---------------------------------------------------

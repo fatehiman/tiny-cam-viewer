@@ -58,6 +58,11 @@ Configuration requirements:
 
 The application must never hardcode camera credentials.
 
+**Addition (grid and fullscreen streams):** a line can contain `{normal:X}` and `{full:X}` markers anywhere.
+The grid uses the URL with `X` of `{normal:...}`; fullscreen uses the URL with `X` of `{full:...}` (for example the
+high-resolution main stream). This is plain text replacement. For such a camera, entering or leaving fullscreen
+restarts its stream (it switches to the other URL). Lines without markers behave as described in section 5.
+
 ## 4. Main User Interface
 
 The main window must display camera streams in a 4×2 grid.

@@ -52,15 +52,17 @@ type Callbacks struct {
 
 // Instance is one libmpv player for one camera.
 type Instance struct {
-	idx   int
-	url   string
-	scale float64 // DPI scale for the OSD text
-	h     uintptr
-	cb    Callbacks
+	idx     int
+	normal  string  // stream for the grid
+	fullURL string  // stream for fullscreen; "" = use the same stream
+	scale   float64 // DPI scale for the OSD text
+	h       uintptr
+	cb      Callbacks
 
 	done chan struct{} // closed when the event loop has ended
 
 	mu           sync.Mutex
+	full         bool // fullscreen view is active
 	state        State
 	detail       string
 	closing      bool
@@ -70,13 +72,22 @@ type Instance struct {
 	w, h2        int         // size of the video window in pixels
 }
 
+// current returns the URL for the active view. Call with i.mu held.
+func (i *Instance) current() string {
+	if i.full && i.fullURL != "" {
+		return i.fullURL
+	}
+	return i.normal
+}
+
 // New creates the player, embeds it in the window wid and starts the stream.
-func New(idx int, url string, wid uintptr, scale float64, cb Callbacks) (*Instance, error) {
+// fullURL may be empty (the same stream is used in fullscreen).
+func New(idx int, url, fullURL string, wid uintptr, scale float64, cb Callbacks) (*Instance, error) {
 	h := mpvCreate()
 	if h == 0 {
 		return nil, fmt.Errorf("mpv_create failed")
 	}
-	i := &Instance{idx: idx, url: url, h: h, cb: cb, scale: scale, done: make(chan struct{}), backoff: initialBackoff}
+	i := &Instance{idx: idx, normal: url, fullURL: fullURL, h: h, cb: cb, scale: scale, done: make(chan struct{}), backoff: initialBackoff}
 
 	set := func(name, value string, required bool) error {
 		if rc := mpvSetOption(h, name, value); rc < 0 {
@@ -177,11 +188,32 @@ func (i *Instance) connect() {
 	if i.reconnecting {
 		st = Reconnecting
 	}
+	url := i.current()
 	i.mu.Unlock()
 	i.setState(st, "")
-	if rc := mpvCommand(i.h, "loadfile", i.url, "replace"); rc < 0 {
+	if rc := mpvCommand(i.h, "loadfile", url, "replace"); rc < 0 {
 		i.fail("loadfile: " + errString(rc))
 	}
+}
+
+// SetFull switches between the grid stream and the fullscreen stream.
+// It does nothing if the camera has no separate fullscreen stream.
+// The switch restarts the connection, so it runs in a goroutine.
+func (i *Instance) SetFull(full bool) {
+	i.mu.Lock()
+	if i.closing || i.full == full || i.fullURL == "" {
+		i.mu.Unlock()
+		return
+	}
+	i.full = full
+	if i.timer != nil { // a retry of the old stream is pending: replace it
+		i.timer.Stop()
+		i.timer = nil
+	}
+	i.backoff = initialBackoff
+	i.mu.Unlock()
+	i.logf("switch to %s stream", map[bool]string{true: "fullscreen", false: "grid"}[full])
+	go i.connect()
 }
 
 // fail is called when a connection attempt failed or the stream was lost.
