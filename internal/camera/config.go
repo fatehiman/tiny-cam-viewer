@@ -3,10 +3,12 @@ package camera
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -240,72 +242,36 @@ sc := bufio.NewScanner(f)
 	return entries, false, sc.Err()
 }
 
-// LoadWindowState reads the window state from cameras.conf (stored as special comment lines).
-func LoadWindowState(path string) (WindowState, error) {
+// windowStatePath returns the path to the window state file (window-state.json)
+// in the same directory as the config file.
+func windowStatePath(confPath string) string {
+	dir := filepath.Dir(confPath)
+	return filepath.Join(dir, "window-state.json")
+}
+
+// LoadWindowState reads the window state from window-state.json.
+func LoadWindowState(confPath string) (WindowState, error) {
 	var ws WindowState
-	f, err := os.Open(path)
+	path := windowStatePath(confPath)
+	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return ws, nil // no saved state is not an error
+		}
 		return ws, err
 	}
-	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if strings.HasPrefix(line, "# window-state:") {
-			parseWindowState(line, &ws)
-			ws.HasState = true
-		}
-	}
-	return ws, sc.Err()
+	err = json.Unmarshal(data, &ws)
+	return ws, err
 }
 
-func parseWindowState(line string, ws *WindowState) {
-	// Format: # window-state: x=100,y=100,w=800,h=600,maximized=true,monitor=0
-	parts := strings.Split(strings.TrimPrefix(line, "# window-state:"), ",")
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if strings.HasPrefix(p, "x=") {
-			ws.X, _ = strconv.Atoi(strings.TrimPrefix(p, "x="))
-		} else if strings.HasPrefix(p, "y=") {
-			ws.Y, _ = strconv.Atoi(strings.TrimPrefix(p, "y="))
-		} else if strings.HasPrefix(p, "w=") {
-			ws.Width, _ = strconv.Atoi(strings.TrimPrefix(p, "w="))
-		} else if strings.HasPrefix(p, "h=") {
-			ws.Height, _ = strconv.Atoi(strings.TrimPrefix(p, "h="))
-		} else if strings.HasPrefix(p, "maximized=") {
-			ws.Maximized, _ = strconv.ParseBool(strings.TrimPrefix(p, "maximized="))
-		} else if strings.HasPrefix(p, "monitor=") {
-			ws.Monitor, _ = strconv.Atoi(strings.TrimPrefix(p, "monitor="))
-		}
-	}
-}
-
-// SaveWindowState writes the window state to cameras.conf as a special comment line.
-// It preserves all other content in the file.
-func SaveWindowState(path string, ws WindowState) error {
-	data, err := os.ReadFile(path)
+// SaveWindowState writes the window state to window-state.json.
+func SaveWindowState(confPath string, ws WindowState) error {
+	path := windowStatePath(confPath)
+	data, err := json.MarshalIndent(ws, "", "  ")
 	if err != nil {
 		return err
 	}
-	lines := strings.Split(string(data), "\n")
-	
-	// Remove existing window-state lines
-	var newLines []string
-	for _, line := range lines {
-		if !strings.HasPrefix(strings.TrimSpace(line), "# window-state:") {
-			newLines = append(newLines, line)
-		}
-	}
-	
-	// Add new window-state line if we have valid state
-	if ws.HasState && ws.Width > 0 && ws.Height > 0 {
-		stateLine := fmt.Sprintf("# window-state: x=%d,y=%d,w=%d,h=%d,maximized=%v,monitor=%d",
-			ws.X, ws.Y, ws.Width, ws.Height, ws.Maximized, ws.Monitor)
-		newLines = append(newLines, stateLine)
-	}
-	
-	return os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0o644)
+	return os.WriteFile(path, data, 0o644)
 }
 
 // Validate checks that s looks like an RTSP URL.
