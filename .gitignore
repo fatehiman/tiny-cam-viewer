@@ -1,0 +1,9 @@
+# Local files (never commit real camera URLs: they contain passwords)
+cameras.conf
+*.log
+
+# Build output and test files
+dist/
+.tmp/
+*.exe
+libmpv-2.dll

@@ -1,0 +1,10 @@
+# Tiny Cam Viewer - camera list
+#
+# One RTSP URL per line. Up to 8 cameras. Camera numbers follow the line order.
+# Empty lines and lines that start with # are ignored.
+# Copy this file to "cameras.conf" (same folder as the exe) and edit it.
+#
+# Examples (replace with your own camera address and login):
+#
+# rtsp://192.168.1.18:554/user=admin&password=YOUR_PASSWORD&channel=1&stream=1.sdp?real_stream
+# rtsp://admin:YOUR_PASSWORD@192.168.1.20:554/Streaming/Channels/101

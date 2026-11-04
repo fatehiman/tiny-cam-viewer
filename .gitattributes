@@ -1,0 +1,6 @@
+* text=auto
+*.syso binary
+*.png binary
+*.ico binary
+reference-docs/ export-ignore
+*.md export-ignore
