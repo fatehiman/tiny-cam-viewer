@@ -52,12 +52,14 @@ type Callbacks struct {
 
 // Instance is one libmpv player for one camera.
 type Instance struct {
-	idx     int
-	normal  string  // stream for the grid
-	fullURL string  // stream for fullscreen; "" = use the same stream
-	scale   float64 // DPI scale for the OSD text
-	h       uintptr
-	cb      Callbacks
+	idx       int
+	normal    string  // stream for the grid
+	fullURL   string  // stream for fullscreen; "" = use the same stream
+	normalAR  string  // aspect ratio for normal view (float ratio string for mpv)
+	fullAR    string  // aspect ratio for fullscreen view; "" = use normalAR
+	scale     float64 // DPI scale for the OSD text
+	h         uintptr
+	cb        Callbacks
 
 	done chan struct{} // closed when the event loop has ended
 
@@ -72,22 +74,23 @@ type Instance struct {
 	w, h2        int         // size of the video window in pixels
 }
 
-// current returns the URL for the active view. Call with i.mu held.
-func (i *Instance) current() string {
+// current returns the URL and aspect ratio for the active view. Call with i.mu held.
+func (i *Instance) current() (string, string) {
 	if i.full && i.fullURL != "" {
-		return i.fullURL
+		return i.fullURL, i.fullAR
 	}
-	return i.normal
+	return i.normal, i.normalAR
 }
 
 // New creates the player, embeds it in the window wid and starts the stream.
 // fullURL may be empty (the same stream is used in fullscreen).
-func New(idx int, url, fullURL string, wid uintptr, scale float64, cb Callbacks) (*Instance, error) {
+// normalAR and fullAR are aspect ratio overrides for mpv (float ratio strings like "1.777778").
+func New(idx int, url, fullURL, normalAR, fullAR string, wid uintptr, scale float64, cb Callbacks) (*Instance, error) {
 	h := mpvCreate()
 	if h == 0 {
 		return nil, fmt.Errorf("mpv_create failed")
 	}
-	i := &Instance{idx: idx, normal: url, fullURL: fullURL, h: h, cb: cb, scale: scale, done: make(chan struct{}), backoff: initialBackoff}
+	i := &Instance{idx: idx, normal: url, fullURL: fullURL, normalAR: normalAR, fullAR: fullAR, h: h, cb: cb, scale: scale, done: make(chan struct{}), backoff: initialBackoff}
 
 	set := func(name, value string, required bool) error {
 		if rc := mpvSetOption(h, name, value); rc < 0 {
@@ -133,6 +136,7 @@ var options = [][2]string{
 	{"vo", "gpu"},
 	{"gpu-api", "d3d11"},
 	{"hwdec", "auto"},
+	{"keepaspect", "yes"}, // preserve video aspect ratio with letterboxing
 	{"rtsp-transport", "tcp"},
 	{"aid", "no"},
 	{"ao", "null"},
@@ -188,11 +192,15 @@ func (i *Instance) connect() {
 	if i.reconnecting {
 		st = Reconnecting
 	}
-	url := i.current()
+	url, ar := i.current()
 	i.mu.Unlock()
 	i.setState(st, "")
 	if rc := mpvCommand(i.h, "loadfile", url, "replace"); rc < 0 {
 		i.fail("loadfile: " + errString(rc))
+	}
+	// Set aspect ratio override if specified
+	if ar != "" {
+		mpvSetOption(i.h, "video-aspect-override", ar)
 	}
 }
 

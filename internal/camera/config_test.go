@@ -19,3 +19,53 @@ func TestExpand(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAspectRatio(t *testing.T) {
+	cases := []struct {
+		in         string
+		normalAR   string
+		fullAR     string
+	}{
+		{"", "", ""},
+		{"16:9", "16:9", "16:9"},
+		{"4:3", "4:3", "4:3"},
+		{"640x480", "640x480", "640x480"},
+		{"{normal:4:3}{full:16:9}", "4:3", "16:9"},
+		{"{normal:640x480}{full:1920x1080}", "640x480", "1920x1080"},
+		{"{NORMAL:4:3}{FULL:16:9}", "4:3", "16:9"},
+		{"{normal:4:3}", "4:3", "4:3"},
+		{"{full:16:9}", "", "16:9"},
+	}
+	for _, c := range cases {
+		n, f := parseAspectRatio(c.in)
+		if n != c.normalAR || f != c.fullAR {
+			t.Errorf("parseAspectRatio(%q) = %q, %q; want %q, %q", c.in, n, f, c.normalAR, c.fullAR)
+		}
+	}
+}
+
+func TestNormalizeAR(t *testing.T) {
+	cases := []struct {
+		in     string
+		expect string
+	}{
+		{"", ""},
+		{"16:9", "1.777778"},
+		{"4:3", "1.333333"},
+		{"16x9", "1.777778"},
+		{"4x3", "1.333333"},
+		{"640x480", "1.333333"},
+		{"1920x1080", "1.777778"},
+		{"1.333333", "1.333333"},
+		{"1.777778", "1.777778"},
+		{"invalid", ""},
+		{"16:", ""},
+		{":9", ""},
+	}
+	for _, c := range cases {
+		result := normalizeAR(c.in)
+		if result != c.expect {
+			t.Errorf("normalizeAR(%q) = %q; want %q", c.in, result, c.expect)
+		}
+	}
+}

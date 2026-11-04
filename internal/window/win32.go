@@ -76,6 +76,7 @@ var (
 const (
 	wmDestroy       = 0x0002
 	wmSize          = 0x0005
+	wmMove          = 0x0003
 	wmClose         = 0x0010
 	wmEraseBkgnd    = 0x0014
 	wmPaint         = 0x000F
@@ -87,6 +88,7 @@ const (
 	wmLButtonDblClk = 0x0203
 	wmRButtonUp     = 0x0205
 	wmDpiChanged    = 0x02E0
+	wmWindowPosChanged = 0x0047
 	wmApp           = 0x8000
 
 	wmAppState  = wmApp + 1 // wParam = camera slot
@@ -94,6 +96,8 @@ const (
 	wmAppTray   = wmApp + 3 // lParam = mouse message
 
 	sizeMinimized = 1
+	sizeMaximized = 2
+	sizeRestored  = 0
 
 	wsOverlappedWindow = 0x00CF0000
 	wsChild            = 0x40000000
@@ -153,6 +157,17 @@ const (
 	cwUseDefault = 0x80000000
 )
 
+var (
+	pEnumDisplayMonitors = user32.NewProc("EnumDisplayMonitors")
+	pGetWindowPlacement  = user32.NewProc("GetWindowPlacement")
+	pMonitorFromWindow   = user32.NewProc("MonitorFromWindow")
+)
+
+const (
+	wsMinimizeBox = 0x00020000
+	swMaximize    = 3
+)
+
 type wndClassEx struct {
 	Size       uint32
 	Style      uint32
@@ -195,6 +210,15 @@ type monitorInfo struct {
 	Monitor rect
 	Work    rect
 	Flags   uint32
+}
+
+type windowPlacement struct {
+	Length           uint32
+	Flags            uint32
+	ShowCmd          uint32
+	MinPosition      point
+	MaxPosition      point
+	NormalPosition   rect
 }
 
 type notifyIconData struct {

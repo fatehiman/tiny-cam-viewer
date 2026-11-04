@@ -71,6 +71,11 @@ type app struct {
 	smallIcon      uintptr
 	bigIcon        uintptr
 	taskbarCreated uint32
+
+	// Window state persistence
+	winState    camera.WindowState
+	normalRect  rect // saved normal window rect (for restore from maximized)
+	savingState bool // prevent recursive saves
 }
 
 var a *app
@@ -88,6 +93,9 @@ func Run(dir string, logf func(string, ...any)) int {
 	runtime.LockOSThread()
 	a = &app{confPath: filepath.Join(dir, "cameras.conf"), logf: logf, full: -1, scale: 1}
 	a.hInst, _, _ = pGetModuleHandle.Call(0)
+
+	// Load window state from config
+	a.winState, _ = camera.LoadWindowState(a.confPath)
 
 	cursor, _, _ := pLoadCursor.Call(0, idcArrow)
 	a.blackBr, _, _ = pGetStockObject.Call(4) // BLACK_BRUSH
@@ -108,15 +116,23 @@ func Run(dir string, logf func(string, ...any)) int {
 		return 1
 	}
 
-	hwnd, _, _ := pCreateWindowEx.Call(0, uintptr(unsafe.Pointer(utf16("TCVMain"))),
-		uintptr(unsafe.Pointer(utf16(appTitle))), wsOverlappedWindow|wsClipChildren,
+	// Window style: WS_OVERLAPPEDWINDOW without WS_MINIMIZEBOX (close button will minimize to tray)
+	// WS_EX_APPWINDOW is NOT set, so the window won't appear in the taskbar
+	wsStyle := uintptr(wsOverlappedWindow &^ wsMinimizeBox)
+	wsExStyle := uintptr(wsExNoParentNotify) // no WS_EX_APPWINDOW
+
+	hwnd, _, _ := pCreateWindowEx.Call(wsExStyle, uintptr(unsafe.Pointer(utf16("TCVMain"))),
+		uintptr(unsafe.Pointer(utf16(appTitle))), wsStyle,
 		cwUseDefault, cwUseDefault, 640, 360, 0, 0, a.hInst, 0)
 	if hwnd == 0 {
 		MessageBox("Cannot create the main window.", appTitle, true)
 		return 1
 	}
 	a.hwnd = hwnd
-	centerWindow(hwnd) // after the final size is known, before the first paint
+
+	// Apply saved window state (position, size, maximized, monitor)
+	a.applyWindowState()
+
 	a.scale = float64(dpiFor(hwnd)) / 96
 	a.makeFonts()
 
@@ -200,6 +216,122 @@ func monitorDpi(mon uintptr) int {
 	return int(dx)
 }
 
+// applyWindowState applies the saved window state (position, size, maximized, monitor)
+func (a *app) applyWindowState() {
+	if !a.winState.HasState || a.winState.Width <= 0 || a.winState.Height <= 0 {
+		centerWindow(a.hwnd)
+		return
+	}
+
+	// Get the target monitor
+	var mon uintptr
+	if a.winState.Monitor > 0 {
+		// Get monitor by index
+		mon = a.getMonitorByIndex(a.winState.Monitor)
+	}
+	if mon == 0 {
+		// Fallback to primary monitor
+		var pt point
+		pGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+		mon, _, _ = pMonitorFromPoint.Call(uintptr(uint32(pt.X))|uintptr(uint32(pt.Y))<<32, monitorDefaultToPrimary)
+	}
+
+	var mi monitorInfo
+	mi.Size = uint32(unsafe.Sizeof(mi))
+	pGetMonitorInfo.Call(mon, uintptr(unsafe.Pointer(&mi)))
+	dpi := monitorDpi(mon)
+
+	// Adjust window rect for DPI
+	r := rect{int32(a.winState.X), int32(a.winState.Y), int32(a.winState.X + a.winState.Width), int32(a.winState.Y + a.winState.Height)}
+	pAdjustWindowRectExDpi.Call(uintptr(unsafe.Pointer(&r)), wsOverlappedWindow &^ wsMinimizeBox, 0, wsExNoParentNotify, uintptr(dpi))
+	w, h := int(r.Right-r.Left), int(r.Bottom-r.Top)
+
+	// Clamp to monitor work area
+	ww, wh := int(mi.Work.Right-mi.Work.Left), int(mi.Work.Bottom-mi.Work.Top)
+	w, h = min(w, ww), min(h, wh)
+	x := max(int(mi.Work.Left), min(a.winState.X, int(mi.Work.Right)-w))
+	y := max(int(mi.Work.Top), min(a.winState.Y, int(mi.Work.Bottom)-h))
+
+	setPos(a.hwnd, x, y, w, h, 0)
+	a.normalRect = rect{int32(x), int32(y), int32(x + w), int32(y + h)}
+
+	if a.winState.Maximized {
+		pShowWindow.Call(a.hwnd, swMaximize)
+	}
+}
+
+// getMonitorByIndex returns the monitor handle for the given index (0 = primary)
+func (a *app) getMonitorByIndex(index int) uintptr {
+	var monitors []uintptr
+	callback := syscall.NewCallback(func(hMonitor, hdcMonitor, lprcMonitor, dwData uintptr) uintptr {
+		monitors = append(monitors, hMonitor)
+		return 1 // TRUE to continue enumeration
+	})
+	pEnumDisplayMonitors.Call(0, 0, callback, 0)
+	if index >= 0 && index < len(monitors) {
+		return monitors[index]
+	}
+	return 0
+}
+
+// saveWindowState saves the current window state to config
+func (a *app) saveWindowState() {
+	if a.savingState || a.hwnd == 0 {
+		return
+	}
+	a.savingState = true
+	defer func() { a.savingState = false }()
+
+	var wp windowPlacement
+	wp.Length = uint32(unsafe.Sizeof(wp))
+	pGetWindowPlacement.Call(a.hwnd, uintptr(unsafe.Pointer(&wp)))
+
+	// Get monitor index
+	mon, _, _ := pMonitorFromWindow.Call(a.hwnd, monitorDefaultToPrimary)
+	monitorIndex := a.getMonitorIndex(mon)
+
+	// Save normal position (not maximized)
+	var r rect
+	if wp.ShowCmd == swMaximize {
+		// Use saved normalRect or get from wp.rcNormalPosition
+		r = wp.NormalPosition
+	} else {
+		pGetWindowRect.Call(a.hwnd, uintptr(unsafe.Pointer(&r)))
+	}
+
+	a.winState = camera.WindowState{
+		X:         int(r.Left),
+		Y:         int(r.Top),
+		Width:     int(r.Right - r.Left),
+		Height:    int(r.Bottom - r.Top),
+		Maximized: wp.ShowCmd == swMaximize,
+		Monitor:   monitorIndex,
+		HasState:  true,
+	}
+
+	go func(path string, ws camera.WindowState) {
+		if err := camera.SaveWindowState(path, ws); err != nil {
+			a.logf("save window state: %v", err)
+		}
+	}(a.confPath, a.winState)
+}
+
+// getMonitorIndex returns the index of the given monitor (0 = primary)
+func (a *app) getMonitorIndex(target uintptr) int {
+	var monitors []uintptr
+	callback := syscall.NewCallback(func(hMonitor, hdcMonitor, lprcMonitor, dwData uintptr) uintptr {
+		monitors = append(monitors, hMonitor)
+		return 1
+	})
+	pEnumDisplayMonitors.Call(0, 0, callback, 0)
+	for i, m := range monitors {
+		if m == target {
+			return i
+		}
+	}
+	return 0
+}
+
 // ---- configuration and players -------------------------------------------
 
 // applyConfig reads cameras.conf into the slots. It returns true if an
@@ -256,9 +388,9 @@ func (a *app) startCameras() {
 			continue
 		}
 		a.starting.Add(1)
-		go func(idx int, url, fullURL string, wid uintptr) {
+		go func(idx int, url, fullURL, normalAR, fullAR string, wid uintptr) {
 			defer a.starting.Done()
-			inst, err := player.New(idx, url, fullURL, wid, a.scale, cb)
+			inst, err := player.New(idx, url, fullURL, normalAR, fullAR, wid, a.scale, cb)
 			a.mu.Lock()
 			if err != nil {
 				a.slots[idx].state, a.slots[idx].detail = player.Error, err.Error()
@@ -268,7 +400,7 @@ func (a *app) startCameras() {
 			}
 			a.mu.Unlock()
 			postMessage(a.hwnd, wmAppState, uintptr(idx), 0)
-		}(i, s.entry.URL, s.entry.FullURL, s.cell)
+		}(i, s.entry.URL, s.entry.FullURL, s.entry.NormalAR, s.entry.FullAR, s.cell)
 	}
 }
 
@@ -435,6 +567,17 @@ func mainProc(hwnd, m, w, l uintptr) uintptr {
 			return 0
 		}
 		a.layout()
+		// Save state on maximize/restore
+		if w == sizeMaximized || w == sizeRestored {
+			a.saveWindowState()
+		}
+		return 0
+	case wmMove:
+		a.saveWindowState()
+		return 0
+	case wmWindowPosChanged:
+		// Save state when window position/size changes (including restore from maximized)
+		a.saveWindowState()
 		return 0
 	case wmEraseBkgnd:
 		return 1
@@ -485,7 +628,8 @@ func mainProc(hwnd, m, w, l uintptr) uintptr {
 		pDestroyWindow.Call(hwnd)
 		return 0
 	case wmClose:
-		a.close()
+		// Close button (X) minimizes to tray instead of closing
+		pShowWindow.Call(hwnd, swHide)
 		return 0
 	case wmDestroy:
 		a.removeTray()

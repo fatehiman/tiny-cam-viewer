@@ -56,18 +56,39 @@ This is only text replacement. The app makes two URLs from the line:
 - If a line has `{full:...}` but no `{normal:...}`, the grid URL simply has nothing in that place.
 - Both URLs are checked. An invalid one shows an **Error** status in the cell.
 
+### Optional aspect ratio per stream
+
+If a camera's normal and fullscreen streams have different aspect ratios (e.g., sub stream is 4:3, main stream is 16:9), you can specify them after a comma at the end of the line. This forces mpv to display the video with the correct aspect ratio (letterboxing if needed).
+
+```text
+# Aspect ratio spec after comma: {normal:W:H}{full:W:H} or single value for both
+rtsp://192.168.1.18:554/user=admin&password=YOUR_PASSWORD&channel=1&stream={normal:1}{full:2}.sdp?real_stream,{normal:4:3}{full:16:9}
+rtsp://192.168.1.18:554/user=admin&password=YOUR_PASSWORD&channel=1&stream={normal:1}{full:2}.sdp?real_stream,{normal:640x480}{full:1920x1080}
+rtsp://192.168.1.18:554/user=admin&password=YOUR_PASSWORD&channel=1&stream=1.sdp?real_stream,16:9
+```
+
+Formats accepted for the aspect ratio value:
+- `W:H` or `WxH` (e.g., `4:3`, `16:9`, `640x480`, `1920x1080`)
+- Decimal ratio (e.g., `1.333333`, `1.777778`)
+- With `{normal:...}{full:...}` markers for different ratios per view
+- Without markers: single ratio applied to both views
+
+The app converts these to a float ratio for mpv's `video-aspect-override` option. Combined with `keepaspect=yes` (always enabled), the video will never stretch — black bars appear when the window aspect differs from the stream aspect.
+
 ## Using the app
 
 | Action | Result |
 |---|---|
 | Double-click a camera | That camera fills the whole window. The other cameras keep running (hidden). If the line has `{normal:X}{full:X}` markers, this camera switches to its fullscreen (high-resolution) stream, which takes a moment to connect. Without markers the stream is **not** restarted. |
 | Double-click again, or press `Esc` | Back to the 4×2 grid. The camera switches back to its grid stream. |
-| Minimize the window | The window hides. The app keeps running in the system tray. |
-| Left-click tray icon | Show or hide the window. |
+| Close button (X) or Minimize | The window hides. The app keeps running in the system tray. |
+| Left-click tray icon | Show or hide the window (remembers last position, size, maximized state, and monitor). |
 | Right-click tray icon | Menu: Show/Hide window, Reload cameras, Edit cameras.conf, **Exit**. |
-| Close button (X) or tray **Exit** | Stops all streams, frees all resources and exits. |
+| Tray menu **Exit** | Stops all streams, frees all resources and exits. |
 
 Only one copy of the app can run. A second copy shows an error message and exits.
+
+The window position, size, maximized state, and monitor are remembered in `cameras.conf` (as a comment line). The app does not show in the Windows taskbar.
 
 ### Status in each cell
 

@@ -87,7 +87,12 @@ func (a *app) toggleWindow() {
 		pShowWindow.Call(a.hwnd, swHide)
 		return
 	}
-	pShowWindow.Call(a.hwnd, swRestore)
+	// Restore window state (maximized or normal)
+	if a.winState.Maximized {
+		pShowWindow.Call(a.hwnd, swMaximize)
+	} else {
+		pShowWindow.Call(a.hwnd, swRestore)
+	}
 	pSetForegroundWindow.Call(a.hwnd)
 }
 
@@ -121,6 +126,6 @@ func (a *app) trayMenu() {
 		pShellExecute.Call(0, uintptr(unsafe.Pointer(utf16("open"))), uintptr(unsafe.Pointer(utf16("notepad.exe"))),
 			uintptr(unsafe.Pointer(utf16(`"`+a.confPath+`"`))), 0, swShow)
 	case cmdExit:
-		postMessage(a.hwnd, wmClose, 0, 0)
+		a.close() // Actually exit the app
 	}
 }
