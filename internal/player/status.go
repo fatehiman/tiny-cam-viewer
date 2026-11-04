@@ -62,5 +62,7 @@ func (i *Instance) SetSize(w, h int) {
 	i.mu.Unlock()
 	if !same && !closing {
 		i.updateOSD(s, d)
+		// Notify mpv of the window size change so it can resize its video window
+		mpvCommand(i.h, "set", "geometry", fmt.Sprintf("%dx%d", w, h))
 	}
 }
