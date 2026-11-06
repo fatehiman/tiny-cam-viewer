@@ -121,6 +121,7 @@ func New(idx int, url, fullURL, normalAR, fullAR string, wid uintptr, scale floa
 	mpvCommand(h, "keybind", "MBTN_LEFT_DBL", "script-message tcv-toggle")
 	mpvCommand(h, "keybind", "ESC", "script-message tcv-back")
 	mpvCommand(h, "keybind", "MBTN_RIGHT", "script-message tcv-menu")
+	mpvCommand(h, "keybind", "MBTN_LEFT", "script-message tcv-click") // the window checks if the contrast button was hit
 
 	go i.loop()
 	i.connect()
@@ -314,6 +315,8 @@ func (i *Instance) loop() {
 				i.cb.Action(i.idx, "back")
 			case "tcv-menu":
 				i.cb.Action(i.idx, "menu")
+			case "tcv-click":
+				i.cb.Action(i.idx, "click")
 			}
 		}
 	}

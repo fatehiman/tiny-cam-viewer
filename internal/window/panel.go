@@ -3,6 +3,8 @@ package window
 import (
 	"fmt"
 	"unsafe"
+
+	"github.com/fatehiman/tiny-cam-viewer/internal/player"
 )
 
 // The picture panel: a small tool window with two sliders (brightness and
@@ -38,6 +40,18 @@ func (a *app) gridCell(i, W, H int) (x, y, w, h int) {
 	g := a.gap()
 	w, h = (W-(cols-1)*g)/cols, (H-(rows-1)*g)/rows
 	return (i % cols) * (w + g), (i / cols) * (h + g), w, h
+}
+
+// onButton tells if the mouse is on the contrast button of camera idx.
+func (a *app) onButton(idx int) bool {
+	if idx < 0 || idx >= len(a.slots) {
+		return false
+	}
+	var pt point
+	pGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	pScreenToClient.Call(a.slots[idx].cell, uintptr(unsafe.Pointer(&pt)))
+	x, y, w, h := player.ButtonRect(a.scale)
+	return int(pt.X) >= x && int(pt.X) < x+w && int(pt.Y) >= y && int(pt.Y) < y+h
 }
 
 func (a *app) closePanel() {

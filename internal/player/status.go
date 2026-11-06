@@ -36,21 +36,51 @@ func assEscape(s string) string {
 	return s
 }
 
-// updateOSD shows the camera number and the status in the video window.
-// A native child window can not be drawn over a Direct3D video window, so the
-// text is drawn by libmpv itself (osd-overlay).
+// osdLayout gives the pixel positions in the video window: padding, font size,
+// the button (x, y, diameter) and the x of the status text.
+func osdLayout(scale float64) (pad, size, bx, by, d, sx int) {
+	pad = int(8*scale + .5)
+	size = int(15*scale + .5)
+	d = int(16*scale + .5)
+	bx = pad + int(2.4*float64(size)+.5)
+	by = pad + int(0.1*float64(size)+.5)
+	sx = bx + d + int(0.5*float64(size)+.5)
+	return
+}
+
+// ButtonRect is the click area of the contrast button, in pixels of the cell.
+func ButtonRect(scale float64) (x, y, w, h int) {
+	_, _, bx, by, d, _ := osdLayout(scale)
+	m := int(3*scale + .5)
+	return bx - m, by - m, d + 2*m, d + 2*m
+}
+
+// updateOSD shows the camera number, the contrast button and the status in the
+// video window. A native child window can not be drawn over a Direct3D video
+// window, so all of it is drawn by libmpv itself (osd-overlay).
 func (i *Instance) updateOSD(s State, detail string) {
 	r, g, b := StateColor(s)
-	size := int(15*i.scale + .5)
-	pad := int(8*i.scale + .5)
+	pad, size, bx, by, d, sx := osdLayout(i.scale)
 	text := assEscape(StatusText(s, detail))
-	ass := fmt.Sprintf(`{\an7\pos(%d,%d)\fs%d\bord2\shad0\3c&H000000&\1c&H%02X%02X%02X&}●{\1c&HF0F0F0&\b1} %d{\b0\1c&HC8C8C8&}  %s`,
-		pad, pad, size, b, g, r, i.idx+1, text)
+	head := fmt.Sprintf(`{n7\pos(%d,%d)s%dord2\shad0c&H000000&c&H%02X%02X%02X&}●{c&HF0F0F0&1} %d`, pad, pad, size, b, g, r, i.idx+1)
+	status := fmt.Sprintf(`{n7\pos(%d,%d)s%dord2\shad0c&H000000&c&HC8C8C8&}%s`, sx, pad, size, text)
+	// contrast icon: a white disc with a dark right half
+	rr := float64(d) / 2
+	k := 0.5523 * rr
+	disc := fmt.Sprintf("m 0 %.1f b 0 %.1f %.1f 0 %.1f 0 b %.1f 0 %.1f %.1f %.1f %.1f b %.1f %.1f %.1f %.1f %.1f %.1f b %.1f %.1f 0 %.1f 0 %.1f",
+		rr, rr-k, rr-k, rr, rr+k, 2*rr, rr-k, 2*rr, rr, 2*rr, rr+k, rr+k, 2*rr, rr, 2*rr, rr-k, 2*rr, rr+k, rr)
+	half := fmt.Sprintf("m %.1f 0 b %.1f 0 %.1f %.1f %.1f %.1f b %.1f %.1f %.1f %.1f %.1f %.1f",
+		rr, rr+k, 2*rr, rr-k, 2*rr, rr, 2*rr, rr+k, rr+k, 2*rr, rr, 2*rr)
+	// two overlays at the same position (libass puts drawings of one event side by side)
+	button := fmt.Sprintf(`{n7\pos(%d,%d)ord1\shad0c&HF0F0F0&c&HF0F0F0&\p1}%s{\p0}`, bx, by, disc)
+	dark := fmt.Sprintf(`{n7\pos(%d,%d)ord1\shad0c&HF0F0F0&c&H202020&\p1}%s{\p0}`, bx, by, half)
 	i.mu.Lock()
 	w, h := i.w, i.h2
 	i.mu.Unlock()
 	// res_x / res_y = real size in pixels, so that the text has a fixed size.
-	mpvCommand(i.h, "osd-overlay", "1", "ass-events", ass, strconv.Itoa(w), strconv.Itoa(h))
+	for n, ass := range []string{head, button, dark, status} {
+		mpvCommand(i.h, "osd-overlay", strconv.Itoa(n+1), "ass-events", ass, strconv.Itoa(w), strconv.Itoa(h))
+	}
 }
 
 // SetSize tells the player how big its video window is (in pixels).

@@ -81,7 +81,7 @@ The app converts these to a float ratio for mpv's `video-aspect-override` option
 |---|---|
 | Double-click a camera | That camera fills the whole window. The other cameras keep running (hidden). If the line has `{normal:X}{full:X}` markers, this camera switches to its fullscreen (high-resolution) stream, which takes a moment to connect. Without markers the stream is **not** restarted. |
 | Double-click again, or press `Esc` | Back to the 4×2 grid. The camera switches back to its grid stream. |
-| Right-click a camera | A small **Brightness / Contrast** window opens over the *next* camera (or the previous one for the last camera in a row), so the camera you adjust stays visible. In fullscreen it opens in the top right corner. Move the sliders, or press **Reset** to set both back to 0. Click anywhere else to close it. |
+| Click the contrast icon (next to the camera number, top left), or right-click a camera | A small **Brightness / Contrast** window opens over the *next* camera (or the previous one for the last camera in a row), so the camera you adjust stays visible. In fullscreen it opens in the top right corner. Move the sliders, or press **Reset** to set both back to 0. Click anywhere else to close it. |
 | Close button (X) | The window hides. The app keeps running in the system tray. There is no minimize button. |
 | Left-click tray icon | Show or hide the window. It comes back at the same position, size, state (normal or maximized) and monitor. |
 | Right-click tray icon | Menu: Show/Hide window, Reload cameras, Edit cameras.conf, **Exit**. |

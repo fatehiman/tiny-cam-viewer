@@ -31,8 +31,7 @@ Test streams without cameras: run `mediamtx` and push test patterns:
   pumping messages while it closes its video windows (otherwise: deadlock).
 - **Events, not polling**: one goroutine per camera blocks in `mpv_wait_event(h, 3600)`. State changes are posted to
   the UI thread with `PostMessage` (`wmAppState`).
-- **Mouse/keys**: libmpv makes its own child window (class `mpv`) inside our `TCVCell` window and takes the mouse.
-  So double-click and Esc are bound with `keybind` to `script-message tcv-toggle` / `tcv-back` and come back as
+- **Mouse/keys**: libmpv makes its own child window (class `mpv`) inside our `TCVCell` window. Double-click and Esc are bound with `keybind` to `script-message tcv-toggle` / `tcv-back` and come back as
   `MPV_EVENT_CLIENT_MESSAGE`. `input-default-bindings=no` removes all other mpv keys.
 - **Status text**: drawn with `osd-overlay` (ASS), because a sibling Win32 window can not be shown above a D3D11
   swap chain window (first try with a badge window: it was hidden behind the video). `TCVCell.paintCell` is only
@@ -60,8 +59,11 @@ Test streams without cameras: run `mediamtx` and push test patterns:
 - **settings.conf** (`camera.Settings`): window rect (normal rect from `GetWindowPlacement`), maximized, monitor index,
   and brightness/contrast per camera number. Separate from `cameras.conf` on purpose (that file has passwords and is
   edited by hand). It is not saved at every `WM_SIZE`: only on `WM_EXITSIZEMOVE`, maximize/restore, hide and exit.
-- **Brightness/contrast panel** (`panel.go`): right-click is bound in libmpv (`MBTN_RIGHT` -> `script-message tcv-menu`)
-  because libmpv owns the mouse in the cell. The panel is a separate top-level tool window (a sibling window can not be
+- **Brightness/contrast panel** (`panel.go`): opened by right-click on a cell, or by a left click on the contrast
+  icon drawn in the OSD (`player.ButtonRect` is its hit area; `onButton` compares it with the cursor). The mpv child
+  window is mouse-transparent (`WindowFromPoint` returns `TCVCell`), so `cellProc` gets `WM_LBUTTONUP`/`WM_RBUTTONUP`
+  (and the double click) directly; the libmpv `keybind`s are only a backup. The OSD has 4 overlays: 1 dot+number,
+  2+3 icon (libass puts two drawings of one event side by side, so the dark half is its own overlay), 4 status. The panel is a separate top-level tool window (a sibling window can not be
   shown above the D3D video), owned by the main window, positioned over the neighbour cell. It closes on
   `WM_ACTIVATE` inactive. Values go to libmpv with `set brightness/contrast` (they survive `loadfile`).
 - **Exit**: `close()` hides the window, removes the tray icon, stops players in a goroutine

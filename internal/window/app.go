@@ -36,6 +36,7 @@ const (
 	actToggle = 1
 	actBack   = 2
 	actMenu   = 3
+	actClick  = 4
 )
 
 // userData is GWLP_USERDATA (-21) as an index for Get/SetWindowLongPtr.
@@ -399,6 +400,8 @@ func (a *app) callbacks() player.Callbacks {
 				l = actToggle
 			case "menu":
 				l = actMenu
+			case "click":
+				l = actClick
 			}
 			postMessage(hwnd, wmAppAction, uintptr(idx), l)
 		},
@@ -633,10 +636,14 @@ func mainProc(hwnd, m, w, l uintptr) uintptr {
 		a.updateTray()
 		return 0
 	case wmAppAction:
-		if l == actMenu {
+		if l == actMenu || (l == actClick && a.onButton(int(w))) {
 			a.openPanel(int(w))
+		} else if l == actClick {
+			// plain click on the video: nothing
 		} else if l == actToggle {
-			a.toggleFull(int(w))
+			if !a.onButton(int(w)) { // a double click on the contrast button is not "fullscreen"
+				a.toggleFull(int(w))
+			}
 		} else if a.full >= 0 {
 			a.toggleFull(a.full)
 		}
@@ -717,6 +724,15 @@ func cellProc(hwnd, m, w, l uintptr) uintptr {
 	case wmLButtonDblClk:
 		idx, _, _ := pGetWindowLongPtr.Call(hwnd, userData)
 		postMessage(a.hwnd, wmAppAction, idx, actToggle)
+		return 0
+	case wmLButtonUp, wmRButtonUp:
+		// libmpv's video window passes the mouse to this cell window
+		idx, _, _ := pGetWindowLongPtr.Call(hwnd, userData)
+		act := uintptr(actMenu)
+		if uint32(m) == wmLButtonUp {
+			act = actClick
+		}
+		postMessage(a.hwnd, wmAppAction, idx, act)
 		return 0
 	case wmKeyDown:
 		if w == vkEscape {

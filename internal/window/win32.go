@@ -167,6 +167,7 @@ var (
 	pGetWindow           = user32.NewProc("GetWindow")
 	pSetWindowText       = user32.NewProc("SetWindowTextW")
 	pClientToScreen      = user32.NewProc("ClientToScreen")
+	pScreenToClient      = user32.NewProc("ScreenToClient")
 	pInitCommonControls  = comctl32.NewProc("InitCommonControlsEx")
 )
 
