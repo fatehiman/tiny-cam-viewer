@@ -4,3 +4,4 @@
 *.ico binary
 reference-docs/ export-ignore
 *.md export-ignore
+.claude/ export-ignore

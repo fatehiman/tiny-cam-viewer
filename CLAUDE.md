@@ -47,7 +47,23 @@ Test streams without cameras: run `mediamtx` and push test patterns:
   and nothing changes. With a `FullURL`, `toggleFull` calls `Instance.SetFull`, which cancels a pending retry and
   runs `loadfile ... replace` with the other URL (in a goroutine). One player per camera, so no extra RAM. Only the
   fullscreen camera uses the big stream; the hidden ones stay on their grid streams.
-- **Minimize** hides the window to the tray (`wmSize` -> `SW_HIDE`).
+- **Minimize / X**: the window has no minimize button. X (`WM_CLOSE`) and any minimize (`wmSize`, Win+Down) call
+  `hideWindow` (save state, `SW_HIDE`).
+- **No taskbar button**: the main window is *owned* by a hidden window (class `TCVOwner`, ignores `WM_CLOSE`). An owned
+  top-level window has no taskbar button, and it keeps the normal title bar (`WS_EX_TOOLWINDOW` would change it).
+- **Resize**: never swallow `WM_WINDOWPOSCHANGED` in `mainProc`: `DefWindowProc` makes `WM_SIZE` from it, and `WM_SIZE`
+  runs `layout()`. (Returning 0 there was the "content does not resize" bug.) `layout()` also resizes the libmpv child
+  window to the cell size.
+- **Start minimized**: `startedHidden()` reads `STARTUPINFO.wShowWindow`. Windows replaces the argument of the *first*
+  `ShowWindow` call of a process with that value, so `Run` makes one dummy `ShowWindow(SW_HIDE)` right after creating
+  the window. The first real show is `showWindow()` (it uses `SW_MAXIMIZE` once if `pendingMax`).
+- **settings.conf** (`camera.Settings`): window rect (normal rect from `GetWindowPlacement`), maximized, monitor index,
+  and brightness/contrast per camera number. Separate from `cameras.conf` on purpose (that file has passwords and is
+  edited by hand). It is not saved at every `WM_SIZE`: only on `WM_EXITSIZEMOVE`, maximize/restore, hide and exit.
+- **Brightness/contrast panel** (`panel.go`): right-click is bound in libmpv (`MBTN_RIGHT` -> `script-message tcv-menu`)
+  because libmpv owns the mouse in the cell. The panel is a separate top-level tool window (a sibling window can not be
+  shown above the D3D video), owned by the main window, positioned over the neighbour cell. It closes on
+  `WM_ACTIVATE` inactive. Values go to libmpv with `set brightness/contrast` (they survive `loadfile`).
 - **Exit**: `close()` hides the window, removes the tray icon, stops players in a goroutine
   (`quit` + `mpv_terminate_destroy`, in parallel), then `wmAppQuit` destroys the window.
 - **Tray icon is added after the first config load**, so the tooltip is correct from the start.

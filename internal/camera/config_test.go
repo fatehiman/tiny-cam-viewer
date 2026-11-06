@@ -22,9 +22,9 @@ func TestExpand(t *testing.T) {
 
 func TestParseAspectRatio(t *testing.T) {
 	cases := []struct {
-		in         string
-		normalAR   string
-		fullAR     string
+		in       string
+		normalAR string
+		fullAR   string
 	}{
 		{"", "", ""},
 		{"16:9", "16:9", "16:9"},

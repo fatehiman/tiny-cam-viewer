@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"unsafe"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/fatehiman/tiny-cam-viewer/internal/camera"
 	"github.com/fatehiman/tiny-cam-viewer/internal/player"
 )
@@ -33,6 +35,7 @@ const (
 
 	actToggle = 1
 	actBack   = 2
+	actMenu   = 3
 )
 
 // userData is GWLP_USERDATA (-21) as an index for Get/SetWindowLongPtr.
@@ -72,10 +75,12 @@ type app struct {
 	bigIcon        uintptr
 	taskbarCreated uint32
 
-	// Window state persistence
-	winState    camera.WindowState
-	normalRect  rect // saved normal window rect (for restore from maximized)
-	savingState bool // prevent recursive saves
+	// Saved settings (window, brightness, contrast) and the picture panel
+	set        camera.Settings
+	dir        string // folder of the exe and the config files
+	dragging   bool   // the user is moving or resizing the window
+	pendingMax bool   // the window must be maximized when it is shown the first time
+	panel      panel
 }
 
 var a *app
@@ -91,11 +96,11 @@ func scaled(v int) int {
 // Run creates the UI and runs the message loop. It returns the exit code.
 func Run(dir string, logf func(string, ...any)) int {
 	runtime.LockOSThread()
-	a = &app{confPath: filepath.Join(dir, "cameras.conf"), logf: logf, full: -1, scale: 1}
+	a = &app{confPath: filepath.Join(dir, "cameras.conf"), dir: dir, logf: logf, full: -1, scale: 1}
 	a.hInst, _, _ = pGetModuleHandle.Call(0)
 
-	// Load window state from config
-	a.winState, _ = camera.LoadWindowState(a.confPath)
+	a.set = camera.LoadSettings(dir)
+	initControls()
 
 	cursor, _, _ := pLoadCursor.Call(0, idcArrow)
 	a.blackBr, _, _ = pGetStockObject.Call(4) // BLACK_BRUSH
@@ -111,27 +116,37 @@ func Run(dir string, logf func(string, ...any)) int {
 		return r != 0
 	}
 	if !register("TCVMain", syscall.NewCallback(mainProc), 0, 0) ||
-		!register("TCVCell", syscall.NewCallback(cellProc), csDblClks, a.blackBr) {
+		!register("TCVCell", syscall.NewCallback(cellProc), csDblClks, a.blackBr) ||
+		!register("TCVOwner", syscall.NewCallback(ownerProc), 0, 0) ||
+		!register("TCVPanel", syscall.NewCallback(panelProc), 0, 16) { // 16 = COLOR_BTNFACE + 1
 		MessageBox("Cannot register the window classes.", appTitle, true)
 		return 1
 	}
 
-	// Window style: WS_OVERLAPPEDWINDOW without WS_MINIMIZEBOX (close button will minimize to tray)
-	// WS_EX_APPWINDOW is NOT set, so the window won't appear in the taskbar
-	// wsClipChildren is required for proper child window layout/resizing
-	wsStyle := uintptr(wsOverlappedWindow &^ wsMinimizeBox | wsClipChildren)
-	wsExStyle := uintptr(wsExNoParentNotify) // no WS_EX_APPWINDOW
+	// A top-level window that has an owner never gets a taskbar button. The
+	// owner is a hidden window, so the app lives only in the system tray.
+	owner, _, _ := pCreateWindowEx.Call(0, uintptr(unsafe.Pointer(utf16("TCVOwner"))), 0, wsPopup,
+		0, 0, 0, 0, 0, 0, a.hInst, 0)
 
-	hwnd, _, _ := pCreateWindowEx.Call(wsExStyle, uintptr(unsafe.Pointer(utf16("TCVMain"))),
+	// WS_OVERLAPPEDWINDOW without the minimize button: the close button (X)
+	// hides the window to the tray. wsClipChildren is needed for the child cells.
+	wsStyle := uintptr(wsOverlappedWindow&^wsMinimizeBox | wsClipChildren)
+
+	hwnd, _, _ := pCreateWindowEx.Call(wsExNoParentNotify, uintptr(unsafe.Pointer(utf16("TCVMain"))),
 		uintptr(unsafe.Pointer(utf16(appTitle))), wsStyle,
-		cwUseDefault, cwUseDefault, 640, 360, 0, 0, a.hInst, 0)
+		cwUseDefault, cwUseDefault, 640, 360, owner, 0, a.hInst, 0)
 	if hwnd == 0 {
 		MessageBox("Cannot create the main window.", appTitle, true)
 		return 1
 	}
 	a.hwnd = hwnd
+	// Windows replaces the argument of the FIRST ShowWindow call of a process
+	// with the "show" value from the start info (for example "minimized" when
+	// DelayedTaskRunner starts us minimized). Use that first call up now, so
+	// the later calls work as written.
+	pShowWindow.Call(hwnd, swHide)
 
-	// Apply saved window state (position, size, maximized, monitor)
+	// Put the window at its saved place and size (not shown yet).
 	a.applyWindowState()
 
 	a.scale = float64(dpiFor(hwnd)) / 96
@@ -145,7 +160,11 @@ func Run(dir string, logf func(string, ...any)) int {
 
 	created := a.applyConfig()
 	a.addTray()
-	pShowWindow.Call(hwnd, swShow)
+	if startedHidden() {
+		a.logf("started minimized/hidden: the window stays in the tray")
+	} else {
+		a.showWindow()
+	}
 	a.layout()
 	a.startCameras()
 	if created {
@@ -217,120 +236,125 @@ func monitorDpi(mon uintptr) int {
 	return int(dx)
 }
 
-// applyWindowState applies the saved window state (position, size, maximized, monitor)
-func (a *app) applyWindowState() {
-	if !a.winState.HasState || a.winState.Width <= 0 || a.winState.Height <= 0 {
-		centerWindow(a.hwnd)
-		return
-	}
+// monitorList is filled by enumMonitors. The callback is created once,
+// because syscall.NewCallback memory is never freed.
+var (
+	monitorList []uintptr
+	monitorCb   = syscall.NewCallback(func(hMonitor, hdc, lprc, data uintptr) uintptr {
+		monitorList = append(monitorList, hMonitor)
+		return 1 // continue
+	})
+)
 
-	// Get the target monitor
-	var mon uintptr
-	if a.winState.Monitor > 0 {
-		// Get monitor by index
-		mon = a.getMonitorByIndex(a.winState.Monitor)
-	}
-	if mon == 0 {
-		// Fallback to primary monitor
-		var pt point
-		pGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
-		mon, _, _ = pMonitorFromPoint.Call(uintptr(uint32(pt.X))|uintptr(uint32(pt.Y))<<32, monitorDefaultToPrimary)
-	}
-
-	var mi monitorInfo
-	mi.Size = uint32(unsafe.Sizeof(mi))
-	pGetMonitorInfo.Call(mon, uintptr(unsafe.Pointer(&mi)))
-	dpi := monitorDpi(mon)
-
-	// Adjust window rect for DPI
-	r := rect{int32(a.winState.X), int32(a.winState.Y), int32(a.winState.X + a.winState.Width), int32(a.winState.Y + a.winState.Height)}
-	pAdjustWindowRectExDpi.Call(uintptr(unsafe.Pointer(&r)), wsOverlappedWindow &^ wsMinimizeBox, 0, wsExNoParentNotify, uintptr(dpi))
-	w, h := int(r.Right-r.Left), int(r.Bottom-r.Top)
-
-	// Clamp to monitor work area
-	ww, wh := int(mi.Work.Right-mi.Work.Left), int(mi.Work.Bottom-mi.Work.Top)
-	w, h = min(w, ww), min(h, wh)
-	x := max(int(mi.Work.Left), min(a.winState.X, int(mi.Work.Right)-w))
-	y := max(int(mi.Work.Top), min(a.winState.Y, int(mi.Work.Bottom)-h))
-
-	setPos(a.hwnd, x, y, w, h, 0)
-	a.normalRect = rect{int32(x), int32(y), int32(x + w), int32(y + h)}
-
-	if a.winState.Maximized {
-		pShowWindow.Call(a.hwnd, swMaximize)
-	}
+// enumMonitors returns all monitor handles (the first one is the primary).
+func enumMonitors() []uintptr {
+	monitorList = monitorList[:0]
+	pEnumDisplayMonitors.Call(0, 0, monitorCb, 0)
+	return monitorList
 }
 
-// getMonitorByIndex returns the monitor handle for the given index (0 = primary)
-func (a *app) getMonitorByIndex(index int) uintptr {
-	var monitors []uintptr
-	callback := syscall.NewCallback(func(hMonitor, hdcMonitor, lprcMonitor, dwData uintptr) uintptr {
-		monitors = append(monitors, hMonitor)
-		return 1 // TRUE to continue enumeration
-	})
-	pEnumDisplayMonitors.Call(0, 0, callback, 0)
-	if index >= 0 && index < len(monitors) {
-		return monitors[index]
+// getMonitorByIndex returns the monitor handle for the index, or 0.
+func getMonitorByIndex(index int) uintptr {
+	if list := enumMonitors(); index >= 0 && index < len(list) {
+		return list[index]
 	}
 	return 0
 }
 
-// saveWindowState saves the current window state to config
-func (a *app) saveWindowState() {
-	if a.savingState || a.hwnd == 0 {
-		return
-	}
-	a.savingState = true
-	defer func() { a.savingState = false }()
-
-	var wp windowPlacement
-	wp.Length = uint32(unsafe.Sizeof(wp))
-	pGetWindowPlacement.Call(a.hwnd, uintptr(unsafe.Pointer(&wp)))
-
-	// Get monitor index
-	mon, _, _ := pMonitorFromWindow.Call(a.hwnd, monitorDefaultToPrimary)
-	monitorIndex := a.getMonitorIndex(mon)
-
-	// Save normal position (not maximized)
-	var r rect
-	if wp.ShowCmd == swMaximize {
-		// Use saved normalRect or get from wp.rcNormalPosition
-		r = wp.NormalPosition
-	} else {
-		pGetWindowRect.Call(a.hwnd, uintptr(unsafe.Pointer(&r)))
-	}
-
-	a.winState = camera.WindowState{
-		X:         int(r.Left),
-		Y:         int(r.Top),
-		Width:     int(r.Right - r.Left),
-		Height:    int(r.Bottom - r.Top),
-		Maximized: wp.ShowCmd == swMaximize,
-		Monitor:   monitorIndex,
-		HasState:  true,
-	}
-
-	go func(path string, ws camera.WindowState) {
-		if err := camera.SaveWindowState(path, ws); err != nil {
-			a.logf("save window state: %v", err)
-		}
-	}(a.confPath, a.winState)
-}
-
-// getMonitorIndex returns the index of the given monitor (0 = primary)
-func (a *app) getMonitorIndex(target uintptr) int {
-	var monitors []uintptr
-	callback := syscall.NewCallback(func(hMonitor, hdcMonitor, lprcMonitor, dwData uintptr) uintptr {
-		monitors = append(monitors, hMonitor)
-		return 1
-	})
-	pEnumDisplayMonitors.Call(0, 0, callback, 0)
-	for i, m := range monitors {
+func getMonitorIndex(target uintptr) int {
+	for i, m := range enumMonitors() {
 		if m == target {
 			return i
 		}
 	}
 	return 0
+}
+
+// startedHidden is true when the program was started minimized or hidden
+// (for example by DelayedTaskRunner). The window then stays in the tray.
+func startedHidden() bool {
+	var si windows.StartupInfo
+	if windows.GetStartupInfo(&si) != nil || si.Flags&windows.STARTF_USESHOWWINDOW == 0 {
+		return false
+	}
+	switch si.ShowWindow {
+	case 0, 2, 6, 7, 11: // SW_HIDE, SHOWMINIMIZED, MINIMIZE, SHOWMINNOACTIVE, FORCEMINIMIZE
+		return true
+	}
+	return false
+}
+
+// applyWindowState moves the (hidden) window to the saved place and size. The
+// maximized state is applied when the window is shown (showWindow).
+func (a *app) applyWindowState() {
+	ws := a.set.Window
+	if !ws.Valid {
+		centerWindow(a.hwnd)
+		return
+	}
+	mon := getMonitorByIndex(ws.Monitor)
+	if mon == 0 { // that monitor is gone: use the one nearest to the saved place
+		r := rect{int32(ws.X), int32(ws.Y), int32(ws.X + ws.Width), int32(ws.Y + ws.Height)}
+		mon, _, _ = pMonitorFromRect.Call(uintptr(unsafe.Pointer(&r)), monitorDefaultToNearest)
+	}
+	var mi monitorInfo
+	mi.Size = uint32(unsafe.Sizeof(mi))
+	pGetMonitorInfo.Call(mon, uintptr(unsafe.Pointer(&mi)))
+
+	// The saved rectangle is the outer window rectangle in pixels. Keep it inside the work area.
+	ww, wh := int(mi.Work.Right-mi.Work.Left), int(mi.Work.Bottom-mi.Work.Top)
+	w, h := min(ws.Width, ww), min(ws.Height, wh)
+	x := max(int(mi.Work.Left), min(ws.X, int(mi.Work.Right)-w))
+	y := max(int(mi.Work.Top), min(ws.Y, int(mi.Work.Bottom)-h))
+	setPos(a.hwnd, x, y, w, h, 0)
+	a.pendingMax = ws.Maximized
+}
+
+// showWindow shows the window in its remembered state (normal or maximized).
+func (a *app) showWindow() {
+	if a.pendingMax {
+		a.pendingMax = false
+		pShowWindow.Call(a.hwnd, swMaximize)
+	} else {
+		pShowWindow.Call(a.hwnd, swShow) // a hidden maximized window comes back maximized
+	}
+	pSetForegroundWindow.Call(a.hwnd)
+}
+
+// hideWindow hides the window to the tray and remembers where it was.
+func (a *app) hideWindow() {
+	a.closePanel()
+	a.saveWindowState()
+	pShowWindow.Call(a.hwnd, swHide)
+}
+
+// saveWindowState remembers the window place, size, state and monitor.
+func (a *app) saveWindowState() {
+	if a.hwnd == 0 {
+		return
+	}
+	var wp windowPlacement
+	wp.Length = uint32(unsafe.Sizeof(wp))
+	pGetWindowPlacement.Call(a.hwnd, uintptr(unsafe.Pointer(&wp)))
+	style, _, _ := pGetWindowLongPtr.Call(a.hwnd, uintptr(gwlStyleIdx))
+	maximized := a.pendingMax || style&wsMaximize != 0
+
+	r := wp.NormalPosition // the normal rectangle, also while maximized
+	if r.Right-r.Left < 200 || r.Bottom-r.Top < 120 {
+		return
+	}
+	mon, _, _ := pMonitorFromWindow.Call(a.hwnd, monitorDefaultToNearest)
+	a.set.Window = camera.WindowState{
+		X: int(r.Left), Y: int(r.Top), Width: int(r.Right - r.Left), Height: int(r.Bottom - r.Top),
+		Maximized: maximized, Monitor: getMonitorIndex(mon), Valid: true,
+	}
+	a.saveSettings()
+}
+
+func (a *app) saveSettings() {
+	if err := a.set.Save(a.dir); err != nil {
+		a.logf("save settings: %v", err)
+	}
 }
 
 // ---- configuration and players -------------------------------------------
@@ -370,8 +394,11 @@ func (a *app) callbacks() player.Callbacks {
 		StateChanged: func(idx int) { postMessage(hwnd, wmAppState, uintptr(idx), 0) },
 		Action: func(idx int, action string) {
 			l := uintptr(actBack)
-			if action == "toggle" {
+			switch action {
+			case "toggle":
 				l = actToggle
+			case "menu":
+				l = actMenu
 			}
 			postMessage(hwnd, wmAppAction, uintptr(idx), l)
 		},
@@ -389,9 +416,9 @@ func (a *app) startCameras() {
 			continue
 		}
 		a.starting.Add(1)
-		go func(idx int, url, fullURL, normalAR, fullAR string, wid uintptr) {
+		go func(idx int, url, fullURL, normalAR, fullAR string, wid uintptr, pic camera.Picture) {
 			defer a.starting.Done()
-			inst, err := player.New(idx, url, fullURL, normalAR, fullAR, wid, a.scale, cb)
+			inst, err := player.New(idx, url, fullURL, normalAR, fullAR, wid, a.scale, pic.Brightness, pic.Contrast, cb)
 			a.mu.Lock()
 			if err != nil {
 				a.slots[idx].state, a.slots[idx].detail = player.Error, err.Error()
@@ -401,7 +428,7 @@ func (a *app) startCameras() {
 			}
 			a.mu.Unlock()
 			postMessage(a.hwnd, wmAppState, uintptr(idx), 0)
-		}(i, s.entry.URL, s.entry.FullURL, s.entry.NormalAR, s.entry.FullAR, s.cell)
+		}(i, s.entry.URL, s.entry.FullURL, s.entry.NormalAR, s.entry.FullAR, s.cell, a.set.Cams[i])
 	}
 }
 
@@ -435,6 +462,7 @@ func (a *app) reload() {
 		return
 	}
 	a.reloading = true
+	a.closePanel()
 	a.logf("reloading cameras")
 	a.mu.Lock()
 	for i := range a.slots {
@@ -449,6 +477,8 @@ func (a *app) close() {
 		return
 	}
 	a.closing = true
+	a.closePanel()
+	a.saveWindowState()
 	pShowWindow.Call(a.hwnd, swHide)
 	a.removeTray()
 	a.stopPlayers(wmAppQuit)
@@ -477,9 +507,7 @@ func (a *app) bounds(i, W, H int) (x, y, w, h int, visible bool) {
 	if a.full >= 0 {
 		return 0, 0, W, H, i == a.full
 	}
-	g := a.gap()
-	w, h = (W-(cols-1)*g)/cols, (H-(rows-1)*g)/rows
-	x, y = (i%cols)*(w+g), (i/cols)*(h+g)
+	x, y, w, h = a.gridCell(i, W, H)
 	return x, y, w, h, true
 }
 
@@ -500,6 +528,10 @@ func (a *app) layout() {
 			continue
 		}
 		setPos(a.slots[i].cell, x, y, w, h, swpShowWindow)
+		// The libmpv video window is the only child of the cell: make it fill the cell.
+		if child, _, _ := pGetWindow.Call(a.slots[i].cell, gwChild); child != 0 {
+			setPos(child, 0, 0, w, h, 0)
+		}
 		a.mu.Lock()
 		inst := a.slots[i].inst
 		a.mu.Unlock()
@@ -529,6 +561,7 @@ func (a *app) toggleFull(idx int) {
 	if idx < 0 || idx >= len(a.slots) || !a.slots[idx].active {
 		return
 	}
+	a.closePanel()
 	if a.full == idx {
 		a.full = -1
 	} else {
@@ -564,21 +597,20 @@ func mainProc(hwnd, m, w, l uintptr) uintptr {
 	switch uint32(m) {
 	case wmSize:
 		if w == sizeMinimized {
-			pShowWindow.Call(hwnd, swHide) // minimize to the tray
+			a.hideWindow() // minimize to the tray
 			return 0
 		}
 		a.layout()
-		// Save state on maximize/restore
-		if w == sizeMaximized || w == sizeRestored {
-			a.saveWindowState()
+		if !a.dragging && (w == sizeMaximized || w == sizeRestored) {
+			a.saveWindowState() // maximize or restore (not every step of a drag)
 		}
 		return 0
-	case wmMove:
-		a.saveWindowState()
+	case wmEnterSizeMove:
+		a.dragging = true
 		return 0
-	case wmWindowPosChanged:
-		// Save state when window position/size changes (including restore from maximized)
-		a.saveWindowState()
+	case wmExitSizeMove:
+		a.dragging = false
+		a.saveWindowState() // the user finished moving or resizing
 		return 0
 	case wmEraseBkgnd:
 		return 1
@@ -601,7 +633,9 @@ func mainProc(hwnd, m, w, l uintptr) uintptr {
 		a.updateTray()
 		return 0
 	case wmAppAction:
-		if l == actToggle {
+		if l == actMenu {
+			a.openPanel(int(w))
+		} else if l == actToggle {
 			a.toggleFull(int(w))
 		} else if a.full >= 0 {
 			a.toggleFull(a.full)
@@ -630,7 +664,7 @@ func mainProc(hwnd, m, w, l uintptr) uintptr {
 		return 0
 	case wmClose:
 		// Close button (X) minimizes to tray instead of closing
-		pShowWindow.Call(hwnd, swHide)
+		a.hideWindow()
 		return 0
 	case wmDestroy:
 		a.removeTray()
@@ -731,4 +765,13 @@ func (a *app) paintCell(hwnd uintptr, idx int) {
 		pDrawText.Call(hdc, uintptr(unsafe.Pointer(utf16(text))), ^uintptr(0), uintptr(unsafe.Pointer(&line)),
 			dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 	}
+}
+
+// ownerProc is the hidden owner of the main window. It only exists so that
+// the main window has no taskbar button. It ignores WM_CLOSE.
+func ownerProc(hwnd, m, w, l uintptr) uintptr {
+	if uint32(m) == wmClose {
+		return 0
+	}
+	return defWindowProc(hwnd, m, w, l)
 }

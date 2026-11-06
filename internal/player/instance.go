@@ -45,21 +45,21 @@ const (
 // (the window code only posts a message to the UI thread).
 type Callbacks struct {
 	StateChanged func(idx int)
-	// Action is "toggle" (double click) or "back" (Esc key in the video).
+	// Action is "toggle" (double click), "back" (Esc key) or "menu" (right click) in the video.
 	Action func(idx int, action string)
 	Logf   func(format string, args ...any)
 }
 
 // Instance is one libmpv player for one camera.
 type Instance struct {
-	idx       int
-	normal    string  // stream for the grid
-	fullURL   string  // stream for fullscreen; "" = use the same stream
-	normalAR  string  // aspect ratio for normal view (float ratio string for mpv)
-	fullAR    string  // aspect ratio for fullscreen view; "" = use normalAR
-	scale     float64 // DPI scale for the OSD text
-	h         uintptr
-	cb        Callbacks
+	idx      int
+	normal   string  // stream for the grid
+	fullURL  string  // stream for fullscreen; "" = use the same stream
+	normalAR string  // aspect ratio for normal view (float ratio string for mpv)
+	fullAR   string  // aspect ratio for fullscreen view; "" = use normalAR
+	scale    float64 // DPI scale for the OSD text
+	h        uintptr
+	cb       Callbacks
 
 	done chan struct{} // closed when the event loop has ended
 
@@ -85,7 +85,8 @@ func (i *Instance) current() (string, string) {
 // New creates the player, embeds it in the window wid and starts the stream.
 // fullURL may be empty (the same stream is used in fullscreen).
 // normalAR and fullAR are aspect ratio overrides for mpv (float ratio strings like "1.777778").
-func New(idx int, url, fullURL, normalAR, fullAR string, wid uintptr, scale float64, cb Callbacks) (*Instance, error) {
+// brightness and contrast are -100..100 (0 = unchanged).
+func New(idx int, url, fullURL, normalAR, fullAR string, wid uintptr, scale float64, brightness, contrast int, cb Callbacks) (*Instance, error) {
 	h := mpvCreate()
 	if h == 0 {
 		return nil, fmt.Errorf("mpv_create failed")
@@ -108,6 +109,8 @@ func New(idx int, url, fullURL, normalAR, fullAR string, wid uintptr, scale floa
 	for _, o := range options {
 		set(o[0], o[1], false)
 	}
+	set("brightness", strconv.Itoa(brightness), false)
+	set("contrast", strconv.Itoa(contrast), false)
 	if rc := mpvInitialize(h); rc < 0 {
 		mpvDestroy(h)
 		return nil, fmt.Errorf("mpv_initialize: %s", errString(rc))
@@ -117,6 +120,7 @@ func New(idx int, url, fullURL, normalAR, fullAR string, wid uintptr, scale floa
 	// client messages, because the video window is owned by libmpv.
 	mpvCommand(h, "keybind", "MBTN_LEFT_DBL", "script-message tcv-toggle")
 	mpvCommand(h, "keybind", "ESC", "script-message tcv-back")
+	mpvCommand(h, "keybind", "MBTN_RIGHT", "script-message tcv-menu")
 
 	go i.loop()
 	i.connect()
@@ -202,6 +206,19 @@ func (i *Instance) connect() {
 	if ar != "" {
 		mpvSetOption(i.h, "video-aspect-override", ar)
 	}
+}
+
+// SetPicture changes brightness and contrast (-100..100) at once.
+// libmpv keeps these values when the stream is restarted.
+func (i *Instance) SetPicture(brightness, contrast int) {
+	i.mu.Lock()
+	closing := i.closing
+	i.mu.Unlock()
+	if closing {
+		return
+	}
+	mpvCommand(i.h, "set", "brightness", strconv.Itoa(brightness))
+	mpvCommand(i.h, "set", "contrast", strconv.Itoa(contrast))
 }
 
 // SetFull switches between the grid stream and the fullscreen stream.
@@ -295,6 +312,8 @@ func (i *Instance) loop() {
 				i.cb.Action(i.idx, "toggle")
 			case "tcv-back":
 				i.cb.Action(i.idx, "back")
+			case "tcv-menu":
+				i.cb.Action(i.idx, "menu")
 			}
 		}
 	}

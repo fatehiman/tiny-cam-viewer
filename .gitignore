@@ -7,3 +7,11 @@ dist/
 .tmp/
 *.exe
 libmpv-2.dll
+
+# Claude Code local settings (may hold tokens): never commit, never deploy
+.claude/settings.local.json
+
+# Saved by the app (window place, brightness, contrast)
+settings.conf
+settings.conf.tmp
+window-state.json

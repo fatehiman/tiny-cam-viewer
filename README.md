@@ -81,14 +81,29 @@ The app converts these to a float ratio for mpv's `video-aspect-override` option
 |---|---|
 | Double-click a camera | That camera fills the whole window. The other cameras keep running (hidden). If the line has `{normal:X}{full:X}` markers, this camera switches to its fullscreen (high-resolution) stream, which takes a moment to connect. Without markers the stream is **not** restarted. |
 | Double-click again, or press `Esc` | Back to the 4×2 grid. The camera switches back to its grid stream. |
-| Close button (X) or Minimize | The window hides. The app keeps running in the system tray. |
-| Left-click tray icon | Show or hide the window (remembers last position, size, maximized state, and monitor). |
+| Right-click a camera | A small **Brightness / Contrast** window opens over the *next* camera (or the previous one for the last camera in a row), so the camera you adjust stays visible. In fullscreen it opens in the top right corner. Move the sliders, or press **Reset** to set both back to 0. Click anywhere else to close it. |
+| Close button (X) | The window hides. The app keeps running in the system tray. There is no minimize button. |
+| Left-click tray icon | Show or hide the window. It comes back at the same position, size, state (normal or maximized) and monitor. |
 | Right-click tray icon | Menu: Show/Hide window, Reload cameras, Edit cameras.conf, **Exit**. |
 | Tray menu **Exit** | Stops all streams, frees all resources and exits. |
 
 Only one copy of the app can run. A second copy shows an error message and exits.
 
-The window position, size, maximized state, and monitor are remembered in `cameras.conf` (as a comment line). The app does not show in the Windows taskbar.
+The app never shows in the Windows taskbar. It is only in the system tray, also while the window is open.
+
+**Start minimized:** if the app is started minimized or hidden (for example by DelayedTaskRunner with status `1` or `2`),
+the window stays hidden. Only the tray icon appears. Click the tray icon to open the window.
+
+### Saved settings: `settings.conf`
+
+The app remembers these things in `settings.conf` (same folder as the exe, written by the app, ignored by git):
+
+- window position, size, maximized or normal, and monitor number (saved when you finish moving/resizing, maximize/restore, hide the window, or exit)
+- brightness and contrast of each camera (range -100 to 100, saved when you release the slider)
+
+It is a separate file on purpose, so the app never rewrites `cameras.conf` (the file with your passwords).
+Settings of a camera follow the **camera number** (line order in `cameras.conf`).
+If the saved monitor is not there any more, the window opens on the nearest one.
 
 ### Status in each cell
 
@@ -144,6 +159,7 @@ del rsrc_windows_386.syso
 | `tiny-cam-viewer.exe` | yes | The program (about 2.5 MB) |
 | `libmpv-2.dll` | yes | About 100 MB. LGPL build of mpv with FFmpeg inside. Licenses: see `THIRD-PARTY-NOTICES.md` |
 | `cameras.conf` | yes | Created on first start if missing |
+| `settings.conf` | no | Written by the app: window place and size, brightness and contrast |
 | `tiny-cam-viewer.log` | no | Small log (restarted at 512 KB). Passwords are hidden |
 
 No VLC and no other install is needed.
@@ -151,12 +167,12 @@ No VLC and no other install is needed.
 ## How it works (short)
 
 - `main.go`: single instance, finds the program folder, loads `libmpv-2.dll`, starts the UI.
-- `internal/camera`: reads and validates `cameras.conf`; expands `{normal:X}`/`{full:X}`; hides passwords for the log.
+- `internal/camera`: reads and validates `cameras.conf`; expands `{normal:X}`/`{full:X}`; hides passwords for the log; reads and writes `settings.conf`.
 - `internal/player`: calls libmpv through `LoadLibrary` (no cgo). One `mpv_handle` and one goroutine per camera.
   The goroutine sleeps inside `mpv_wait_event` and wakes only for events. There is no polling.
   Video is decoded and rendered by libmpv on the GPU. No video frame is copied into Go memory.
 - `internal/window`: Win32 main window, one child window (`TCVCell`) per camera that libmpv draws into
-  (`--wid`), tray icon and menu. Grid layout and fullscreen are only `SetWindowPos` calls.
+  (`--wid`), tray icon and menu, and the brightness/contrast panel (`panel.go`). Grid layout and fullscreen are only `SetWindowPos` calls.
 - Double-click and `Esc` in the video area are given to us by libmpv as client messages (`script-message`),
   because the video window belongs to libmpv. The status text is drawn by libmpv (`osd-overlay`), because a native
   window can not be drawn on top of a Direct3D video window.

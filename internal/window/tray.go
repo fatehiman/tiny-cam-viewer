@@ -84,16 +84,10 @@ func (a *app) removeTray() { a.notify(nimDelete) }
 
 func (a *app) toggleWindow() {
 	if vis, _, _ := pIsWindowVisible.Call(a.hwnd); vis != 0 {
-		pShowWindow.Call(a.hwnd, swHide)
+		a.hideWindow()
 		return
 	}
-	// Restore window state (maximized or normal)
-	if a.winState.Maximized {
-		pShowWindow.Call(a.hwnd, swMaximize)
-	} else {
-		pShowWindow.Call(a.hwnd, swRestore)
-	}
-	pSetForegroundWindow.Call(a.hwnd)
+	a.showWindow() // normal or maximized, as it was
 }
 
 func (a *app) trayMenu() {

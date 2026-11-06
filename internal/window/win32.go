@@ -74,22 +74,22 @@ var (
 
 // Window messages and constants.
 const (
-	wmDestroy       = 0x0002
-	wmSize          = 0x0005
-	wmMove          = 0x0003
-	wmClose         = 0x0010
-	wmEraseBkgnd    = 0x0014
-	wmPaint         = 0x000F
-	wmGetMinMaxInfo = 0x0024
-	wmSetIcon       = 0x0080
-	wmKeyDown       = 0x0100
-	wmCommand       = 0x0111
-	wmLButtonUp     = 0x0202
-	wmLButtonDblClk = 0x0203
-	wmRButtonUp     = 0x0205
-	wmDpiChanged    = 0x02E0
+	wmDestroy          = 0x0002
+	wmSize             = 0x0005
+	wmMove             = 0x0003
+	wmClose            = 0x0010
+	wmEraseBkgnd       = 0x0014
+	wmPaint            = 0x000F
+	wmGetMinMaxInfo    = 0x0024
+	wmSetIcon          = 0x0080
+	wmKeyDown          = 0x0100
+	wmCommand          = 0x0111
+	wmLButtonUp        = 0x0202
+	wmLButtonDblClk    = 0x0203
+	wmRButtonUp        = 0x0205
+	wmDpiChanged       = 0x02E0
 	wmWindowPosChanged = 0x0047
-	wmApp           = 0x8000
+	wmApp              = 0x8000
 
 	wmAppState  = wmApp + 1 // wParam = camera slot
 	wmAppAction = wmApp + 2 // wParam = camera slot, lParam = 1 toggle, 2 back
@@ -158,14 +158,48 @@ const (
 )
 
 var (
+	comctl32 = windows.NewLazySystemDLL("comctl32.dll")
+
 	pEnumDisplayMonitors = user32.NewProc("EnumDisplayMonitors")
 	pGetWindowPlacement  = user32.NewProc("GetWindowPlacement")
 	pMonitorFromWindow   = user32.NewProc("MonitorFromWindow")
+	pMonitorFromRect     = user32.NewProc("MonitorFromRect")
+	pGetWindow           = user32.NewProc("GetWindow")
+	pSetWindowText       = user32.NewProc("SetWindowTextW")
+	pClientToScreen      = user32.NewProc("ClientToScreen")
+	pInitCommonControls  = comctl32.NewProc("InitCommonControlsEx")
 )
 
 const (
-	wsMinimizeBox = 0x00020000
-	swMaximize    = 3
+	wsMinimizeBox  = 0x00020000
+	wsMaximize     = 0x01000000
+	wsPopup        = 0x80000000
+	wsCaption      = 0x00C00000
+	wsSysMenu      = 0x00080000
+	wsTabStop      = 0x00010000
+	wsExToolWindow = 0x00000080
+
+	swMaximize = 3
+
+	wmActivate      = 0x0006
+	wmSetFont       = 0x0030
+	wmHScroll       = 0x0114
+	wmEnterSizeMove = 0x0231
+	wmExitSizeMove  = 0x0232
+
+	gwChild = 5
+
+	monitorDefaultToNearest = 2
+
+	// trackbar (slider) control
+	tbmGetPos      = 0x0400
+	tbmSetPos      = 0x0405
+	tbmSetRange    = 0x0406
+	tbmSetPageSize = 0x0415
+	tbmSetLineSize = 0x0417
+	tbsNoTicks     = 0x0010
+	tbThumbTrack   = 5
+	iccBarClasses  = 0x0004
 )
 
 type wndClassEx struct {
@@ -213,12 +247,12 @@ type monitorInfo struct {
 }
 
 type windowPlacement struct {
-	Length           uint32
-	Flags            uint32
-	ShowCmd          uint32
-	MinPosition      point
-	MaxPosition      point
-	NormalPosition   rect
+	Length         uint32
+	Flags          uint32
+	ShowCmd        uint32
+	MinPosition    point
+	MaxPosition    point
+	NormalPosition rect
 }
 
 type notifyIconData struct {
@@ -294,3 +328,6 @@ func dpiFor(hwnd uintptr) int {
 func setPos(hwnd uintptr, x, y, w, h int, flags uintptr) {
 	pSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), uintptr(w), uintptr(h), flags|swpNoZOrder|swpNoActivate)
 }
+
+// gwlStyleIdx is GWL_STYLE (-16) as an index for GetWindowLongPtr.
+var gwlStyleIdx = -16

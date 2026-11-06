@@ -3,12 +3,10 @@ package camera
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -44,23 +42,12 @@ const ExampleConf = `# Tiny Cam Viewer - camera list
 
 // Entry is one camera line from the config file.
 type Entry struct {
-	Number      int    // 1-based camera number (order of the non-empty lines)
-	URL         string // the RTSP URL for the grid (thumbnail) view
-	FullURL     string // the RTSP URL for the fullscreen view; empty = same stream as URL
-	NormalAR    string // aspect ratio for normal view (e.g., "4:3", "16:9", "640x480")
-	FullAR      string // aspect ratio for fullscreen view; empty = same as NormalAR
-	Err         string // not empty when a URL is not valid
-}
-
-// WindowState stores the main window position, size, and state.
-type WindowState struct {
-	X          int  // window left position (normal state)
-	Y          int  // window top position (normal state)
-	Width      int  // window width (normal state)
-	Height     int  // window height (normal state)
-	Maximized  bool // whether window was maximized
-	Monitor    int  // monitor index (0 = primary)
-	HasState   bool // whether valid state was saved
+	Number   int    // 1-based camera number (order of the non-empty lines)
+	URL      string // the RTSP URL for the grid (thumbnail) view
+	FullURL  string // the RTSP URL for the fullscreen view; empty = same stream as URL
+	NormalAR string // aspect ratio for normal view (e.g., "4:3", "16:9", "640x480")
+	FullAR   string // aspect ratio for fullscreen view; empty = same as NormalAR
+	Err      string // not empty when a URL is not valid
 }
 
 // modeRe finds {normal:X} and {full:X} anywhere in a line.
@@ -105,6 +92,7 @@ func Expand(line string) (normal, full string) {
 //   - "4x3" or "16:9" - single aspect ratio for both views
 //   - "{normal:4x3}{full:16x9}" - different aspect ratios for normal and full
 //   - "{normal:640x480}{full:1024x768}" - explicit dimensions
+//
 // Returns (normalAR, fullAR). Empty string means no override.
 func parseAspectRatio(spec string) (normalAR, fullAR string) {
 	spec = strings.TrimSpace(spec)
@@ -192,86 +180,54 @@ func Load(path string) (entries []Entry, created bool, err error) {
 	}
 	defer f.Close()
 
-sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 0, 4096), 64*1024)
-		first := true
-		for sc.Scan() {
-			line := sc.Text()
-			if first {
-				line = strings.TrimPrefix(line, "ï»¿") // UTF-8 BOM
-				first = false
-			}
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			if len(entries) >= MaxCameras {
-				break // extra lines are ignored
-			}
-
-			// Split line into URL part and optional aspect ratio part (after comma)
-			urlPart := line
-			arPart := ""
-			if idx := strings.LastIndex(line, ","); idx != -1 {
-				// Check if the comma is inside {normal:...} or {full:...} - if so, don't split
-				beforeComma := line[:idx]
-				openBraces := strings.Count(beforeComma, "{")
-				closeBraces := strings.Count(beforeComma, "}")
-				if openBraces == closeBraces {
-					urlPart = strings.TrimSpace(line[:idx])
-					arPart = strings.TrimSpace(line[idx+1:])
-				}
-			}
-
-			e := Entry{Number: len(entries) + 1}
-			e.URL, e.FullURL = Expand(urlPart)
-			e.NormalAR, e.FullAR = parseAspectRatio(arPart)
-			// Normalize aspect ratios for mpv (convert to float ratio string)
-			e.NormalAR = normalizeAR(e.NormalAR)
-			e.FullAR = normalizeAR(e.FullAR)
-
-			if verr := Validate(e.URL); verr != nil {
-				e.Err = verr.Error()
-			} else if e.FullURL != "" {
-				if verr := Validate(e.FullURL); verr != nil {
-					e.Err = "fullscreen URL: " + verr.Error()
-				}
-			}
-			entries = append(entries, e)
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 4096), 64*1024)
+	first := true
+	for sc.Scan() {
+		line := sc.Text()
+		if first {
+			line = strings.TrimPrefix(line, "ï»¿") // UTF-8 BOM
+			first = false
 		}
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if len(entries) >= MaxCameras {
+			break // extra lines are ignored
+		}
+
+		// Split line into URL part and optional aspect ratio part (after comma)
+		urlPart := line
+		arPart := ""
+		if idx := strings.LastIndex(line, ","); idx != -1 {
+			// Check if the comma is inside {normal:...} or {full:...} - if so, don't split
+			beforeComma := line[:idx]
+			openBraces := strings.Count(beforeComma, "{")
+			closeBraces := strings.Count(beforeComma, "}")
+			if openBraces == closeBraces {
+				urlPart = strings.TrimSpace(line[:idx])
+				arPart = strings.TrimSpace(line[idx+1:])
+			}
+		}
+
+		e := Entry{Number: len(entries) + 1}
+		e.URL, e.FullURL = Expand(urlPart)
+		e.NormalAR, e.FullAR = parseAspectRatio(arPart)
+		// Normalize aspect ratios for mpv (convert to float ratio string)
+		e.NormalAR = normalizeAR(e.NormalAR)
+		e.FullAR = normalizeAR(e.FullAR)
+
+		if verr := Validate(e.URL); verr != nil {
+			e.Err = verr.Error()
+		} else if e.FullURL != "" {
+			if verr := Validate(e.FullURL); verr != nil {
+				e.Err = "fullscreen URL: " + verr.Error()
+			}
+		}
+		entries = append(entries, e)
+	}
 	return entries, false, sc.Err()
-}
-
-// windowStatePath returns the path to the window state file (window-state.json)
-// in the same directory as the config file.
-func windowStatePath(confPath string) string {
-	dir := filepath.Dir(confPath)
-	return filepath.Join(dir, "window-state.json")
-}
-
-// LoadWindowState reads the window state from window-state.json.
-func LoadWindowState(confPath string) (WindowState, error) {
-	var ws WindowState
-	path := windowStatePath(confPath)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return ws, nil // no saved state is not an error
-		}
-		return ws, err
-	}
-	err = json.Unmarshal(data, &ws)
-	return ws, err
-}
-
-// SaveWindowState writes the window state to window-state.json.
-func SaveWindowState(confPath string, ws WindowState) error {
-	path := windowStatePath(confPath)
-	data, err := json.MarshalIndent(ws, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
 }
 
 // Validate checks that s looks like an RTSP URL.
