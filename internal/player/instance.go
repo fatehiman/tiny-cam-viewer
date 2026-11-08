@@ -68,10 +68,13 @@ type Instance struct {
 	state        State
 	detail       string
 	closing      bool
+	paused       bool // stream closed on purpose (another camera is fullscreen)
 	reconnecting bool // a stream was lost or failed since the last Playing
 	backoff      time.Duration
 	timer        *time.Timer // not nil while a reconnect is scheduled
 	w, h2        int         // size of the video window in pixels
+
+	cmdMu sync.Mutex // orders loadfile/stop from different goroutines
 }
 
 // current returns the URL and aspect ratio for the active view. Call with i.mu held.
@@ -150,11 +153,18 @@ var options = [][2]string{
 	{"keep-open", "no"},
 	{"input-default-bindings", "no"},
 	{"input-media-keys", "no"},
+	// Live view: show each frame as soon as it is decoded, do not wait for its
+	// timestamp. With timed playback every network hiccup added delay that never
+	// went away, the input buffer filled up, mpv stopped reading the socket and
+	// the camera dropped parts of frames (broken pictures).
+	{"untimed", "yes"},
 	{"cache", "no"},
 	{"demuxer-max-bytes", "2MiB"},
 	{"demuxer-max-back-bytes", "0"},
 	{"network-timeout", "10"},
-	{"demuxer-lavf-o", "timeout=8000000"}, // RTSP socket timeout (microseconds): connect and stalled streams
+	// nobuffer: from profile low-latency (this line replaces the whole list, so
+	// it must be repeated here). timeout: RTSP socket timeout in microseconds.
+	{"demuxer-lavf-o", "fflags=+nobuffer,timeout=8000000"},
 	{"background-color", "#000000"},
 }
 
@@ -187,8 +197,10 @@ func (i *Instance) setState(s State, detail string) {
 
 // connect starts (or restarts) the stream.
 func (i *Instance) connect() {
+	i.cmdMu.Lock()
+	defer i.cmdMu.Unlock()
 	i.mu.Lock()
-	if i.closing {
+	if i.closing || i.paused {
 		i.mu.Unlock()
 		return
 	}
@@ -242,11 +254,49 @@ func (i *Instance) SetFull(full bool) {
 	go i.connect()
 }
 
+// SetActive(false) closes the stream to save network bandwidth (used for the
+// hidden cameras while another camera is fullscreen). SetActive(true) opens it
+// again. Both run in a goroutine.
+func (i *Instance) SetActive(on bool) {
+	i.mu.Lock()
+	if i.closing || i.paused == !on {
+		i.mu.Unlock()
+		return
+	}
+	i.paused = !on
+	if i.timer != nil {
+		i.timer.Stop()
+		i.timer = nil
+	}
+	i.backoff = initialBackoff
+	i.reconnecting = false
+	i.mu.Unlock()
+	if on {
+		go i.connect()
+		return
+	}
+	i.setState(Disconnected, "paused")
+	go i.idle()
+}
+
+// idle closes the stream if the camera is still paused.
+func (i *Instance) idle() {
+	i.cmdMu.Lock()
+	defer i.cmdMu.Unlock()
+	i.mu.Lock()
+	stop := i.paused && !i.closing
+	i.mu.Unlock()
+	if stop {
+		i.logf("paused (other camera is fullscreen)")
+		mpvCommand(i.h, "stop")
+	}
+}
+
 // fail is called when a connection attempt failed or the stream was lost.
 // It schedules exactly one reconnect (exponential backoff).
 func (i *Instance) fail(msg string) {
 	i.mu.Lock()
-	if i.closing || i.timer != nil {
+	if i.closing || i.paused || i.timer != nil {
 		i.mu.Unlock()
 		return
 	}
@@ -325,7 +375,7 @@ func (i *Instance) loop() {
 // onPlaying runs when the first video frame is shown.
 func (i *Instance) onPlaying() {
 	i.mu.Lock()
-	if i.closing {
+	if i.closing || i.paused {
 		i.mu.Unlock()
 		return
 	}

@@ -582,12 +582,25 @@ func (a *app) toggleFull(idx int) {
 }
 
 // setSlotFull tells a player to use its fullscreen or its grid stream.
+// The other cameras close their streams while one camera is fullscreen
+// (all network bandwidth goes to that camera) and open them again in the grid.
 func (a *app) setSlotFull(idx int, full bool) {
 	a.mu.Lock()
-	inst := a.slots[idx].inst
+	insts := make([]*player.Instance, len(a.slots))
+	for i := range a.slots {
+		insts[i] = a.slots[i].inst
+	}
 	a.mu.Unlock()
-	if inst != nil {
-		inst.SetFull(full)
+	for i, inst := range insts {
+		if inst == nil {
+			continue
+		}
+		if i == idx {
+			inst.SetActive(true)
+			inst.SetFull(full)
+		} else {
+			inst.SetActive(!full)
+		}
 	}
 }
 

@@ -40,7 +40,17 @@ Test streams without cameras: run `mediamtx` and push test patterns:
   2,4,8,16,30,30... s. It is reset on the first video frame (`MPV_EVENT_PLAYBACK_RESTART`).
   `demuxer-lavf-o=timeout=8000000` makes a dead camera fail after about 8 s instead of 60+ s.
 - **Hardware decoding check**: after the first frame, `hwdec-current` is read once (not polled) and shown as HW/SW.
-- **Fullscreen**: only moves/hides the `TCVCell` windows. Hidden players keep their RTSP session.
+- **Live view (`untimed=yes`)**: frames are shown as soon as they are decoded, not at their timestamp. With timed
+  playback, each network stall added delay that never went away (no catch up for live streams). The demuxer buffer
+  (2 MiB = about 30 s of a sub stream) then filled up, mpv stopped reading the socket, and the NVR dropped parts of
+  frames ("Too short data for FU-A" in the log, last picture line repeated to the bottom with d3d11va). Do not remove
+  it. Burst arrivals are shown fast instead of smooth; that is the price for always-live video.
+- **`demuxer-lavf-o` replaces the whole list**, also the `fflags=+nobuffer` that `profile=low-latency` adds. So our
+  value repeats it: `fflags=+nobuffer,timeout=8000000`.
+- **Fullscreen**: moves/hides the `TCVCell` windows. The hidden players close their stream (`Instance.SetActive(false)`
+  -> mpv `stop`, state Disconnected "paused") so the bandwidth goes to the fullscreen camera; back in the grid they
+  `loadfile` again (about 1 s). `cmdMu` orders `connect`/`idle` from different goroutines: each one re-checks
+  `paused` under the lock, so the last state wins. `fail` and `onPlaying` ignore a paused player.
 - **Grid / fullscreen streams**: `camera.Expand` turns `{normal:X}` / `{full:X}` in a config line into two URLs
   (`Entry.URL`, `Entry.FullURL`). Plain text replacement, no URL parsing. No `{full:` in the line -> `FullURL` is empty
   and nothing changes. With a `FullURL`, `toggleFull` calls `Instance.SetFull`, which cancels a pending retry and
@@ -73,7 +83,7 @@ Test streams without cameras: run `mediamtx` and push test patterns:
 ## Optimization notes
 
 - Tried `swapchain-depth=1`: no measurable gain, removed.
-- Used: `profile=fast,low-latency`, `cache=no`, `demuxer-max-bytes=2MiB`, `demuxer-max-back-bytes=0`, `aid=no`, `ao=null`.
+- Used: `profile=fast,low-latency`, `untimed=yes`, `cache=no`, `demuxer-max-bytes=2MiB`, `demuxer-max-back-bytes=0`, `aid=no`, `ao=null`.
 - The thread count is high because each libmpv has its own FFmpeg and render threads. CPU use is still low.
 - Idea for later: `hwdec=d3d11va-copy` if a driver has problems with zero-copy `d3d11va`.
 

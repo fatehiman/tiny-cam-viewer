@@ -79,7 +79,7 @@ The app converts these to a float ratio for mpv's `video-aspect-override` option
 
 | Action | Result |
 |---|---|
-| Double-click a camera | That camera fills the whole window. The other cameras keep running (hidden). If the line has `{normal:X}{full:X}` markers, this camera switches to its fullscreen (high-resolution) stream, which takes a moment to connect. Without markers the stream is **not** restarted. |
+| Double-click a camera | That camera fills the whole window. The other cameras close their streams while they are hidden, so the full network bandwidth goes to this camera. They connect again (about 1 s) when you go back to the grid. If the line has `{normal:X}{full:X}` markers, this camera switches to its fullscreen (high-resolution) stream, which takes a moment to connect. Without markers the stream is **not** restarted. |
 | Double-click again, or press `Esc` | Back to the 4×2 grid. The camera switches back to its grid stream. |
 | Click the contrast icon (next to the camera number, top left), or right-click a camera | A small **Brightness / Contrast** window opens over the *next* camera (or the previous one for the last camera in a row), so the camera you adjust stays visible. In fullscreen it opens in the top right corner. Move the sliders, or press **Reset** to set both back to 0. Click anywhere else to close it. |
 | Close button (X) | The window hides. The app keeps running in the system tray. There is no minimize button. |
@@ -121,6 +121,16 @@ Top left of every cell: a colored dot, the camera number and the state.
 When a stream fails or is lost, the camera retries after 2 s, then 4 s, 8 s, 16 s, and then every 30 s.
 There is only one pending retry per camera. After a successful connection the delay starts at 2 s again.
 A connection attempt that gets no answer ends after about 8 seconds.
+
+### Live video (no delay)
+
+The app always shows the **newest** frame. It does not wait for the time stamp of each frame
+(mpv option `untimed=yes`). So a slow or busy network can make the video less smooth for a moment,
+but the picture never falls behind the real time, and the input buffer never fills up.
+
+If the picture still breaks (gray areas, or the last line repeated to the bottom) with 8 high-resolution
+streams, the NVR or the network can not send so much data. Use the sub stream in the grid and the main
+stream only in fullscreen, for example `stream={normal:1}{full:0}.sdp` (see above).
 
 ## Build
 

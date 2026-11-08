@@ -93,9 +93,10 @@ Implement the following interaction:
 When the user double-clicks any camera:
 
 - Expand that camera to occupy the entire application window.
-- Hide the other camera windows without stopping their RTSP connections or playback.
-- Keep all other streams running in the background.
-- Do not reconnect or restart the selected stream.
+- Hide the other camera windows.
+- **Changed later (user request):** close the RTSP connections of the hidden cameras while one camera is
+  fullscreen, so all network bandwidth goes to the fullscreen camera. They connect again when the grid comes back.
+- Do not reconnect or restart the selected stream (except when it has a separate `{full:X}` stream).
 
 When the user double-clicks the fullscreen camera again, restore the original 4×2 grid.
 
