@@ -36,6 +36,16 @@ Test streams without cameras: run `mediamtx` and push test patterns:
 - **Status text**: drawn with `osd-overlay` (ASS), because a sibling Win32 window can not be shown above a D3D11
   swap chain window (first try with a badge window: it was hidden behind the video). `TCVCell.paintCell` is only
   used while no player window exists.
+- **ASS tags in `status.go` need real backslashes** (`\an7`, `\fs`, `\bord`, `\1c`, `\3c`, `\p1`) inside Go raw
+  strings. Once they were saved as control bytes (BEL, FF, BS, 0x01, 0x03): libass ignored them, so the text was in the
+  wrong place and the state dot was white. Edit that file only with an editor tool (shell heredocs can eat `\\`), and
+  check: `grep -cP '[\x01-\x08\x0b\x0c\x0e-\x1f]' internal/player/status.go` must print 0.
+- **Zoom (fullscreen only, `player/zoom.go`, `window/zoom.go`)**: mouse wheel zooms at the cursor (mpv `video-zoom`,
+  log2, max 3 = 8x); left-drag pans (`video-pan-x/y`, unit = zoomed picture size, clamped so no empty border appears
+  where the picture could be). The math needs the fitted picture size, so `onPlaying` reads the video aspect once.
+  `WM_MOUSEWHEEL` is handled in `mainProc` (cells pass it up via `DefWindowProc`); libmpv `WHEEL_UP/DOWN` keybinds
+  are a backup. `setSlotFull` calls `ResetZoom` on every fullscreen change. A drag that moved more than 4 px is not a
+  click (so it does not open the panel).
 - **Reconnect**: `Instance.fail` schedules exactly one `time.AfterFunc` (guarded by `timer != nil`). Backoff
   2,4,8,16,30,30... s. It is reset on the first video frame (`MPV_EVENT_PLAYBACK_RESTART`).
   `demuxer-lavf-o=timeout=8000000` makes a dead camera fail after about 8 s instead of 60+ s.
@@ -72,8 +82,9 @@ Test streams without cameras: run `mediamtx` and push test patterns:
 - **Brightness/contrast panel** (`panel.go`): opened by right-click on a cell, or by a left click on the contrast
   icon drawn in the OSD (`player.ButtonRect` is its hit area; `onButton` compares it with the cursor). The mpv child
   window is mouse-transparent (`WindowFromPoint` returns `TCVCell`), so `cellProc` gets `WM_LBUTTONUP`/`WM_RBUTTONUP`
-  (and the double click) directly; the libmpv `keybind`s are only a backup. The OSD has 4 overlays: 1 dot+number,
-  2+3 icon (libass puts two drawings of one event side by side, so the dark half is its own overlay), 4 status. The panel is a separate top-level tool window (a sibling window can not be
+  (and the double click) directly; the libmpv `keybind`s are only a backup. The OSD has 5 overlays: 1 state dot (a
+  drawing), 2 number, 3+4 icon (libass puts two drawings of one event side by side, so the dark half is its own
+  overlay; it has `z=1`, because overlays with the same z have no fixed order), 5 status (+ zoom factor). The panel is a separate top-level tool window (a sibling window can not be
   shown above the D3D video), owned by the main window, positioned over the neighbour cell. It closes on
   `WM_ACTIVATE` inactive. Values go to libmpv with `set brightness/contrast` (they survive `loadfile`).
 - **Exit**: `close()` hides the window, removes the tray icon, stops players in a goroutine

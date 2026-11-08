@@ -45,7 +45,8 @@ const (
 // (the window code only posts a message to the UI thread).
 type Callbacks struct {
 	StateChanged func(idx int)
-	// Action is "toggle" (double click), "back" (Esc key) or "menu" (right click) in the video.
+	// Action is "toggle" (double click), "back" (Esc key), "menu" (right click),
+	// "click", "zoomin" or "zoomout" (mouse wheel) in the video.
 	Action func(idx int, action string)
 	Logf   func(format string, args ...any)
 }
@@ -73,6 +74,9 @@ type Instance struct {
 	backoff      time.Duration
 	timer        *time.Timer // not nil while a reconnect is scheduled
 	w, h2        int         // size of the video window in pixels
+	aspect       float64     // display aspect ratio of the video (0 = unknown)
+	zoom         float64     // log2 of the zoom factor (0 = 1x), fullscreen only
+	panX, panY   float64     // mpv video-pan-x/y
 
 	cmdMu sync.Mutex // orders loadfile/stop from different goroutines
 }
@@ -125,6 +129,8 @@ func New(idx int, url, fullURL, normalAR, fullAR string, wid uintptr, scale floa
 	mpvCommand(h, "keybind", "ESC", "script-message tcv-back")
 	mpvCommand(h, "keybind", "MBTN_RIGHT", "script-message tcv-menu")
 	mpvCommand(h, "keybind", "MBTN_LEFT", "script-message tcv-click") // the window checks if the contrast button was hit
+	mpvCommand(h, "keybind", "WHEEL_UP", "script-message tcv-zoomin")
+	mpvCommand(h, "keybind", "WHEEL_DOWN", "script-message tcv-zoomout")
 
 	go i.loop()
 	i.connect()
@@ -367,6 +373,10 @@ func (i *Instance) loop() {
 				i.cb.Action(i.idx, "menu")
 			case "tcv-click":
 				i.cb.Action(i.idx, "click")
+			case "tcv-zoomin":
+				i.cb.Action(i.idx, "zoomin")
+			case "tcv-zoomout":
+				i.cb.Action(i.idx, "zoomout")
 			}
 		}
 	}
@@ -391,6 +401,7 @@ func (i *Instance) onPlaying() {
 	} else {
 		hw = "no"
 	}
+	i.readAspect()
 	i.logf("playing, hwdec=%s", hw)
 	i.setState(Playing, mode)
 }

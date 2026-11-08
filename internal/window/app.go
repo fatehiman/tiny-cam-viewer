@@ -33,10 +33,12 @@ const (
 	cmdEditConf     = 3
 	cmdExit         = 9
 
-	actToggle = 1
-	actBack   = 2
-	actMenu   = 3
-	actClick  = 4
+	actToggle  = 1
+	actBack    = 2
+	actMenu    = 3
+	actClick   = 4
+	actZoomIn  = 5 // mouse wheel (backup path through libmpv)
+	actZoomOut = 6
 )
 
 // userData is GWLP_USERDATA (-21) as an index for Get/SetWindowLongPtr.
@@ -58,6 +60,7 @@ type app struct {
 	confPath  string
 	logf      func(string, ...any)
 	full      int // slot shown fullscreen, -1 = grid
+	drag      panDrag
 	closing   bool
 	reloading bool
 
@@ -402,6 +405,10 @@ func (a *app) callbacks() player.Callbacks {
 				l = actMenu
 			case "click":
 				l = actClick
+			case "zoomin":
+				l = actZoomIn
+			case "zoomout":
+				l = actZoomOut
 			}
 			postMessage(hwnd, wmAppAction, uintptr(idx), l)
 		},
@@ -591,11 +598,13 @@ func (a *app) setSlotFull(idx int, full bool) {
 		insts[i] = a.slots[i].inst
 	}
 	a.mu.Unlock()
+	a.endDrag()
 	for i, inst := range insts {
 		if inst == nil {
 			continue
 		}
 		if i == idx {
+			inst.ResetZoom()
 			inst.SetActive(true)
 			inst.SetFull(full)
 		} else {
@@ -638,6 +647,9 @@ func mainProc(hwnd, m, w, l uintptr) uintptr {
 			a.toggleFull(a.full)
 		}
 		return 0
+	case wmMouseWheel: // also comes from the cells (DefWindowProc sends it to the parent)
+		a.zoomAt(a.full, float64(int16(w>>16))/120)
+		return 0
 	case wmDpiChanged:
 		a.scale = float64(loword(w)&0xffff) / 96
 		a.makeFonts()
@@ -653,6 +665,10 @@ func mainProc(hwnd, m, w, l uintptr) uintptr {
 			a.openPanel(int(w))
 		} else if l == actClick {
 			// plain click on the video: nothing
+		} else if l == actZoomIn || l == actZoomOut {
+			if int(w) == a.full {
+				a.zoomAt(a.full, map[bool]float64{true: 1, false: -1}[l == actZoomIn])
+			}
 		} else if l == actToggle {
 			if !a.onButton(int(w)) { // a double click on the contrast button is not "fullscreen"
 				a.toggleFull(int(w))
@@ -738,8 +754,24 @@ func cellProc(hwnd, m, w, l uintptr) uintptr {
 		idx, _, _ := pGetWindowLongPtr.Call(hwnd, userData)
 		postMessage(a.hwnd, wmAppAction, idx, actToggle)
 		return 0
+	case wmLButtonDown:
+		a.startDrag(hwnd, l)
+		return 0
+	case wmMouseMove:
+		a.moveDrag(l)
+		return 0
+	case wmCaptureChanged:
+		a.drag.on = false
+		return 0
 	case wmLButtonUp, wmRButtonUp:
 		// libmpv's video window passes the mouse to this cell window
+		if uint32(m) == wmLButtonUp && a.drag.on {
+			moved := a.drag.moved
+			a.endDrag()
+			if moved {
+				return 0 // the end of a pan drag is not a click
+			}
+		}
 		idx, _, _ := pGetWindowLongPtr.Call(hwnd, userData)
 		act := uintptr(actMenu)
 		if uint32(m) == wmLButtonUp {

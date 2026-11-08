@@ -102,6 +102,9 @@ When the user double-clicks the fullscreen camera again, restore the original 4Ã
 
 Also support the `Esc` key to return to grid mode.
 
+**Addition (zoom):** in fullscreen only, the mouse wheel zooms in/out at the mouse pointer (up to 8Ã—), and dragging
+with the left mouse button moves the zoomed picture. Leaving fullscreen resets the zoom.
+
 ## 6. Video Playback Requirements
 
 Use libmpv as the embedded playback engine.

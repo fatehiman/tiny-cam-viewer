@@ -84,6 +84,10 @@ const (
 	wmSetIcon          = 0x0080
 	wmKeyDown          = 0x0100
 	wmCommand          = 0x0111
+	wmMouseMove        = 0x0200
+	wmLButtonDown      = 0x0201
+	wmMouseWheel       = 0x020A
+	wmCaptureChanged   = 0x0215
 	wmLButtonUp        = 0x0202
 	wmLButtonDblClk    = 0x0203
 	wmRButtonUp        = 0x0205
@@ -168,6 +172,8 @@ var (
 	pSetWindowText       = user32.NewProc("SetWindowTextW")
 	pClientToScreen      = user32.NewProc("ClientToScreen")
 	pScreenToClient      = user32.NewProc("ScreenToClient")
+	pSetCapture          = user32.NewProc("SetCapture")
+	pReleaseCapture      = user32.NewProc("ReleaseCapture")
 	pInitCommonControls  = comctl32.NewProc("InitCommonControlsEx")
 )
 

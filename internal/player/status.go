@@ -2,6 +2,7 @@ package player
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -61,26 +62,45 @@ func ButtonRect(scale float64) (x, y, w, h int) {
 func (i *Instance) updateOSD(s State, detail string) {
 	r, g, b := StateColor(s)
 	pad, size, bx, by, d, sx := osdLayout(i.scale)
-	text := assEscape(StatusText(s, detail))
-	head := fmt.Sprintf(`{n7\pos(%d,%d)s%dord2\shad0c&H000000&c&H%02X%02X%02X&}●{c&HF0F0F0&1} %d`, pad, pad, size, b, g, r, i.idx+1)
-	status := fmt.Sprintf(`{n7\pos(%d,%d)s%dord2\shad0c&H000000&c&HC8C8C8&}%s`, sx, pad, size, text)
+	i.mu.Lock()
+	w, h, zoom := i.w, i.h2, i.zoom
+	i.mu.Unlock()
+	text := StatusText(s, detail)
+	if zoom > 0 {
+		text += fmt.Sprintf("  %.1fx", math.Exp2(zoom))
+	}
+	text = assEscape(text)
+	// state dot: a colored disc, vertically centered with the contrast icon
+	dd := int(0.65*float64(d) + .5)
+	dot := fmt.Sprintf(`{\an7\pos(%d,%d)\bord1\shad0\3c&H000000&\1c&H%02X%02X%02X&\p1}%s{\p0}`,
+		pad, by+(d-dd)/2, b, g, r, discPath(float64(dd)/2))
+	num := fmt.Sprintf(`{\an7\pos(%d,%d)\fs%d\b1\bord2\shad0\3c&H000000&\1c&HF0F0F0&}%d`,
+		pad+dd+int(0.3*float64(size)+.5), pad, size, i.idx+1)
+	status := fmt.Sprintf(`{\an7\pos(%d,%d)\fs%d\bord2\shad0\3c&H000000&\1c&HC8C8C8&}%s`, sx, pad, size, text)
 	// contrast icon: a white disc with a dark right half
 	rr := float64(d) / 2
 	k := 0.5523 * rr
-	disc := fmt.Sprintf("m 0 %.1f b 0 %.1f %.1f 0 %.1f 0 b %.1f 0 %.1f %.1f %.1f %.1f b %.1f %.1f %.1f %.1f %.1f %.1f b %.1f %.1f 0 %.1f 0 %.1f",
-		rr, rr-k, rr-k, rr, rr+k, 2*rr, rr-k, 2*rr, rr, 2*rr, rr+k, rr+k, 2*rr, rr, 2*rr, rr-k, 2*rr, rr+k, rr)
 	half := fmt.Sprintf("m %.1f 0 b %.1f 0 %.1f %.1f %.1f %.1f b %.1f %.1f %.1f %.1f %.1f %.1f",
 		rr, rr+k, 2*rr, rr-k, 2*rr, rr, 2*rr, rr+k, rr+k, 2*rr, rr, 2*rr)
 	// two overlays at the same position (libass puts drawings of one event side by side)
-	button := fmt.Sprintf(`{n7\pos(%d,%d)ord1\shad0c&HF0F0F0&c&HF0F0F0&\p1}%s{\p0}`, bx, by, disc)
-	dark := fmt.Sprintf(`{n7\pos(%d,%d)ord1\shad0c&HF0F0F0&c&H202020&\p1}%s{\p0}`, bx, by, half)
-	i.mu.Lock()
-	w, h := i.w, i.h2
-	i.mu.Unlock()
+	button := fmt.Sprintf(`{\an7\pos(%d,%d)\bord1\shad0\3c&HF0F0F0&\1c&HF0F0F0&\p1}%s{\p0}`, bx, by, discPath(rr))
+	dark := fmt.Sprintf(`{\an7\pos(%d,%d)\bord1\shad0\3c&HF0F0F0&\1c&H202020&\p1}%s{\p0}`, bx, by, half)
 	// res_x / res_y = real size in pixels, so that the text has a fixed size.
-	for n, ass := range []string{head, button, dark, status} {
-		mpvCommand(i.h, "osd-overlay", strconv.Itoa(n+1), "ass-events", ass, strconv.Itoa(w), strconv.Itoa(h))
+	// z: the dark half must be drawn over the white disc (same z = no fixed order).
+	for n, ass := range []string{dot, num, button, dark, status} {
+		z := "0"
+		if n == 3 {
+			z = "1"
+		}
+		mpvCommand(i.h, "osd-overlay", strconv.Itoa(n+1), "ass-events", ass, strconv.Itoa(w), strconv.Itoa(h), z)
 	}
+}
+
+// discPath is an ASS drawing of a circle with radius rr (4 bezier curves).
+func discPath(rr float64) string {
+	k := 0.5523 * rr
+	return fmt.Sprintf("m 0 %.1f b 0 %.1f %.1f 0 %.1f 0 b %.1f 0 %.1f %.1f %.1f %.1f b %.1f %.1f %.1f %.1f %.1f %.1f b %.1f %.1f 0 %.1f 0 %.1f",
+		rr, rr-k, rr-k, rr, rr+k, 2*rr, rr-k, 2*rr, rr, 2*rr, rr+k, rr+k, 2*rr, rr, 2*rr, rr-k, 2*rr, rr+k, rr)
 }
 
 // SetSize tells the player how big its video window is (in pixels).
@@ -88,9 +108,16 @@ func (i *Instance) SetSize(w, h int) {
 	i.mu.Lock()
 	same := i.w == w && i.h2 == h
 	i.w, i.h2 = w, h
+	zoomed := i.zoom > 0
+	if zoomed {
+		i.clampPan()
+	}
 	s, d, closing := i.state, i.detail, i.closing
 	i.mu.Unlock()
 	if !same && !closing {
+		if zoomed {
+			i.applyZoom(false)
+		}
 		i.updateOSD(s, d)
 	}
 }
