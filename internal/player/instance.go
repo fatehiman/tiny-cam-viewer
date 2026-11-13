@@ -150,6 +150,12 @@ var options = [][2]string{
 	{"vo", "gpu"},
 	{"gpu-api", "d3d11"},
 	{"hwdec", "auto"},
+	// RAM: by default libavcodec starts about one decoder thread per CPU core
+	// (20 here), each with its own decoder context. The GPU decodes the small
+	// grid stream, so one thread is enough. Saves only ~40 MB for 8 cameras:
+	// most of the ~700 MB is one D3D11 device (NVIDIA driver state) per player.
+	// Keep the default hwdec-extra-frames: too few frames can give broken pictures.
+	{"vd-lavc-threads", "1"},
 	{"keepaspect", "yes"}, // preserve video aspect ratio with letterboxing
 	{"rtsp-transport", "tcp"},
 	{"aid", "no"},
