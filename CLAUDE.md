@@ -27,15 +27,26 @@ Test streams without cameras: run `mediamtx` and push test patterns:
 ## Design decisions (why the code looks like this)
 
 - **Threads**: the Win32 message loop runs on the main OS thread (`runtime.LockOSThread`). libmpv players are created
-  and destroyed in goroutines, never on the UI thread. `mpv_create` is slow, and libmpv needs the UI thread to keep
-  pumping messages while it closes its video windows (otherwise: deadlock).
+  and destroyed in goroutines, never on the UI thread (`mpv_create` is slow).
 - **Events, not polling**: one goroutine per camera blocks in `mpv_wait_event(h, 3600)`. State changes are posted to
   the UI thread with `PostMessage` (`wmAppState`).
-- **Mouse/keys**: libmpv makes its own child window (class `mpv`) inside our `TCVCell` window. Double-click and Esc are bound with `keybind` to `script-message tcv-toggle` / `tcv-back` and come back as
-  `MPV_EVENT_CLIENT_MESSAGE`. `input-default-bindings=no` removes all other mpv keys.
-- **Status text**: drawn with `osd-overlay` (ASS), because a sibling Win32 window can not be shown above a D3D11
-  swap chain window (first try with a badge window: it was hidden behind the video). `TCVCell.paintCell` is only
-  used while no player window exists.
+- **Software rendering, no GPU per camera (2026-11-13, `player/render.go`)**: `vo=libmpv` + the libmpv render API
+  with type `sw`. mpv scales each picture (video + OSD, zoom, pan, aspect) into a Go buffer (`bgr0`, 64-byte aligned,
+  `BLOCK_FOR_TARGET_TIME=0`), and the render goroutine copies it to the `TCVCell` with GDI `StretchDIBits`.
+  `paintCell` repaints the last picture on `WM_PAINT` (`WM_ERASEBKGND` returns 1 = no flicker). Why: with `vo=gpu`
+  each player had its own D3D11 device (+ one more for `hwdec`); the NVIDIA driver keeps 60-80 MB per device.
+  Measured, 8 cameras: `vo=gpu`+`hwdec` 713 MB private; `vo=null hwdec=no` 211 MB; this design ~300 MB, CPU ~0.6 %
+  of the PC, 0 MB GPU memory. Grid streams decode on the CPU (`hwdec=no`); only the fullscreen stream uses
+  `hwdec=auto-copy` (`connect` sets it before `loadfile`), so at most one GPU decoder exists.
+  The update callback (`syscall.NewCallback`, one for all players, id -> `Instance` map) runs on an mpv thread: it
+  only wakes the render goroutine. `mpv_render_context_free` must run before `mpv_terminate_destroy` (`Destroy`).
+  `force-window=yes` is set **after** the render context exists; set before `mpv_initialize` it opened the VO too
+  early ("Error opening/initializing the VO window").
+- **Mouse/keys**: there is no libmpv window any more, so `cellProc` gets all mouse messages (double click, drag,
+  wheel via `DefWindowProc` to `mainProc`, right click) and the main window gets `Esc`. The old libmpv `keybind`s
+  and `MPV_EVENT_CLIENT_MESSAGE` handling are gone/unused.
+- **Status text**: drawn with `osd-overlay` (ASS) by mpv into the rendered picture. `TCVCell.paintCell` draws the
+  status itself only before the first picture.
 - **ASS tags in `status.go` need real backslashes** (`\an7`, `\fs`, `\bord`, `\1c`, `\3c`, `\p1`) inside Go raw
   strings. Once they were saved as control bytes (BEL, FF, BS, 0x01, 0x03): libass ignored them, so the text was in the
   wrong place and the state dot was white. Edit that file only with an editor tool (shell heredocs can eat `\\`), and
@@ -71,8 +82,8 @@ Test streams without cameras: run `mediamtx` and push test patterns:
 - **No taskbar button**: the main window is *owned* by a hidden window (class `TCVOwner`, ignores `WM_CLOSE`). An owned
   top-level window has no taskbar button, and it keeps the normal title bar (`WS_EX_TOOLWINDOW` would change it).
 - **Resize**: never swallow `WM_WINDOWPOSCHANGED` in `mainProc`: `DefWindowProc` makes `WM_SIZE` from it, and `WM_SIZE`
-  runs `layout()`. (Returning 0 there was the "content does not resize" bug.) `layout()` also resizes the libmpv child
-  window to the cell size.
+  runs `layout()`. (Returning 0 there was the "content does not resize" bug.) `layout()` tells each player its cell
+  size (`SetSize`); the next picture is rendered at that size.
 - **Start minimized**: `startedHidden()` reads `STARTUPINFO.wShowWindow`. Windows replaces the argument of the *first*
   `ShowWindow` call of a process with that value, so `Run` makes one dummy `ShowWindow(SW_HIDE)` right after creating
   the window. The first real show is `showWindow()` (it uses `SW_MAXIMIZE` once if `pendingMax`).
@@ -80,13 +91,15 @@ Test streams without cameras: run `mediamtx` and push test patterns:
   and brightness/contrast per camera number. Separate from `cameras.conf` on purpose (that file has passwords and is
   edited by hand). It is not saved at every `WM_SIZE`: only on `WM_EXITSIZEMOVE`, maximize/restore, hide and exit.
 - **Brightness/contrast panel** (`panel.go`): opened by right-click on a cell, or by a left click on the contrast
-  icon drawn in the OSD (`player.ButtonRect` is its hit area; `onButton` compares it with the cursor). The mpv child
-  window is mouse-transparent (`WindowFromPoint` returns `TCVCell`), so `cellProc` gets `WM_LBUTTONUP`/`WM_RBUTTONUP`
-  (and the double click) directly; the libmpv `keybind`s are only a backup. The OSD has 5 overlays: 1 state dot (a
+  icon drawn in the OSD (`player.ButtonRect` is its hit area; `onButton` compares it with the cursor). `cellProc`
+  gets `WM_LBUTTONUP`/`WM_RBUTTONUP` (and the double click) directly. The OSD has 5 overlays: 1 state dot (a
   drawing), 2 number, 3+4 icon (libass puts two drawings of one event side by side, so the dark half is its own
-  overlay; it has `z=1`, because overlays with the same z have no fixed order), 5 status (+ zoom factor). The panel is a separate top-level tool window (a sibling window can not be
-  shown above the D3D video), owned by the main window, positioned over the neighbour cell. It closes on
-  `WM_ACTIVATE` inactive. Values go to libmpv with `set brightness/contrast` (they survive `loadfile`).
+  overlay; it has `z=1`, because overlays with the same z have no fixed order), 5 status (+ zoom factor). The panel is
+  a separate top-level tool window, owned by the main window, positioned over the neighbour cell. It closes on
+  `WM_ACTIVATE` inactive. Values go to libmpv as a video filter (`eqFilter`, `set vf`; it survives `loadfile`):
+  `@eq:lavfi=[lutyuv=y=C*val+K]`. The sw renderer has no equalizer, and the `eq` filter is GPL and **not** in this
+  libmpv build ("parsing the filter graph failed"); `lutyuv` is LGPL. Keep commas out of the expression (lavfi
+  graph syntax). 0/0 = no filter.
 - **Exit**: `close()` hides the window, removes the tray icon, stops players in a goroutine
   (`quit` + `mpv_terminate_destroy`, in parallel), then `wmAppQuit` destroys the window.
 - **Tray icon is added after the first config load**, so the tooltip is correct from the start.
@@ -95,8 +108,10 @@ Test streams without cameras: run `mediamtx` and push test patterns:
 
 - Tried `swapchain-depth=1`: no measurable gain, removed.
 - Used: `profile=fast,low-latency`, `untimed=yes`, `cache=no`, `demuxer-max-bytes=2MiB`, `demuxer-max-back-bytes=0`, `aid=no`, `ao=null`.
-- The thread count is high because each libmpv has its own FFmpeg and render threads. CPU use is still low.
-- Idea for later: `hwdec=d3d11va-copy` if a driver has problems with zero-copy `d3d11va`.
+- `vd-lavc-threads=2`: the default is one decoder thread per CPU core (20) per camera.
+- Tried (2026-11-13, 8 cameras, private MB): `vo=gpu-next` 706 (same as `vo=gpu`), `vo=gpu` + `hwdec=no` 466,
+  `vo=null` + hwdec 619, `vo=direct3d` (not in this libmpv build), `gpu-api=opengl` (crashed), `hwdec-extra-frames=2`
+  (no gain, risk of broken pictures). The GPU device per player was the cost -> software rendering (see above).
 
 ## Auto start
 

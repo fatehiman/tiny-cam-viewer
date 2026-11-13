@@ -4,7 +4,8 @@ A small Windows tray app that shows up to **8 RTSP cameras** in a 4×2 grid.
 
 - Written in Go. Native Win32 windows. No cgo, no framework, no Electron.
 - Video is played by **libmpv** (FFmpeg inside), one independent player per camera.
-- Hardware decoding (D3D11VA) when the PC supports it. The app checks that it is really active.
+- Low RAM: the grid streams are decoded and drawn on the CPU (no GPU device per camera, about 300 MB for
+  8 cameras). The fullscreen camera uses hardware decoding (D3D11VA, copy mode) when the PC supports it.
 - RTSP over TCP, audio off, small buffers for low latency.
 - One camera failing never stops the others. Each camera reconnects by itself.
 
@@ -183,27 +184,24 @@ No VLC and no other install is needed.
 - `internal/camera`: reads and validates `cameras.conf`; expands `{normal:X}`/`{full:X}`; hides passwords for the log; reads and writes `settings.conf`.
 - `internal/player`: calls libmpv through `LoadLibrary` (no cgo). One `mpv_handle` and one goroutine per camera.
   The goroutine sleeps inside `mpv_wait_event` and wakes only for events. There is no polling.
-  Video is decoded and rendered by libmpv on the GPU. No video frame is copied into Go memory.
-- `internal/window`: Win32 main window, one child window (`TCVCell`) per camera that libmpv draws into
-  (`--wid`), tray icon and menu, and the brightness/contrast panel (`panel.go`). Grid layout and fullscreen are only `SetWindowPos` calls.
-- Double-click and `Esc` in the video area are given to us by libmpv as client messages (`script-message`),
-  because the video window belongs to libmpv. The status text is drawn by libmpv (`osd-overlay`), because a native
-  window can not be drawn on top of a Direct3D video window.
+  libmpv renders each picture (video + status text) in software into memory (render API `sw`, `render.go`),
+  and the app copies it into the camera cell with GDI. No GPU device per camera.
+- `internal/window`: Win32 main window, one child window (`TCVCell`) per camera that shows the rendered pictures,
+  tray icon and menu, and the brightness/contrast panel (`panel.go`). Grid layout and fullscreen are only `SetWindowPos` calls.
+- Mouse and keys go directly to our cell windows (there is no libmpv window).
 
 ## Measured resource use
 
-Test PC: Windows 11, i7-13650HX (20 logical cores), RTX 4060. **8 streams** playing at the same time:
-1 real camera (352×288, 6 fps, H.264) and 7 test streams (640×360 up to 1920×1080, 15 fps, H.264).
-All used D3D11VA hardware decoding.
+**2026-11-13, software rendering.** Test PC: Windows 11, 20 logical cores, RTX 4060 Laptop. 8 real cameras
+(NVR sub streams) in the grid; fullscreen = the main stream of one camera.
 
-| Item | Value |
-|---|---|
-| CPU | about 0.3–0.4 of one core (1.6–2 % of the whole CPU) |
-| RAM | about 430 MB working set, 750 MB private bytes (includes GPU driver memory per player) |
-| Threads | about 460 (each libmpv instance starts its own FFmpeg, GPU and cache threads) |
+| State | Private RAM | GPU memory | CPU |
+|---|---|---|---|
+| Grid, 8 cameras (CPU decoding) | about 300–340 MB | 0 MB | about 0.6 % of the whole CPU |
+| Fullscreen, 1 camera main stream (D3D11VA copy) | about 450 MB | about 50 MB | — |
 
-The numbers depend on the cameras (resolution, bitrate) and the GPU driver.
-Real cameras with low resolution (like the 352×288 substream) use much less than the test above.
+Before (GPU rendering, one D3D11 device per camera): about 710 MB private bytes and 460 threads for the same
+8 cameras. The numbers depend on the cameras (resolution, bitrate).
 
 ## Not included on purpose
 

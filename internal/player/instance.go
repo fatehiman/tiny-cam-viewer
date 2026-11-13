@@ -2,7 +2,6 @@ package player
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +78,15 @@ type Instance struct {
 	panX, panY   float64     // mpv video-pan-x/y
 
 	cmdMu sync.Mutex // orders loadfile/stop from different goroutines
+
+	// software rendering (render.go)
+	wid        uintptr // the cell window we draw into
+	rctx       uintptr // mpv_render_context
+	rid        uintptr // id for the update callback
+	upd        chan struct{}
+	renderStop chan struct{}
+	renderDone chan struct{}
+	frame      frame
 }
 
 // current returns the URL and aspect ratio for the active view. Call with i.mu held.
@@ -98,7 +106,7 @@ func New(idx int, url, fullURL, normalAR, fullAR string, wid uintptr, scale floa
 	if h == 0 {
 		return nil, fmt.Errorf("mpv_create failed")
 	}
-	i := &Instance{idx: idx, normal: url, fullURL: fullURL, normalAR: normalAR, fullAR: fullAR, h: h, cb: cb, scale: scale, done: make(chan struct{}), backoff: initialBackoff}
+	i := &Instance{idx: idx, normal: url, fullURL: fullURL, normalAR: normalAR, fullAR: fullAR, h: h, cb: cb, scale: scale, done: make(chan struct{}), backoff: initialBackoff, wid: wid}
 
 	set := func(name, value string, required bool) error {
 		if rc := mpvSetOption(h, name, value); rc < 0 {
@@ -109,28 +117,24 @@ func New(idx int, url, fullURL, normalAR, fullAR string, wid uintptr, scale floa
 		}
 		return nil
 	}
-	if err := set("wid", strconv.FormatUint(uint64(wid), 10), true); err != nil {
-		mpvDestroy(h)
-		return nil, err
-	}
 	for _, o := range options {
 		set(o[0], o[1], false)
 	}
-	set("brightness", strconv.Itoa(brightness), false)
-	set("contrast", strconv.Itoa(contrast), false)
+	set("vf", eqFilter(brightness, contrast), false)
 	if rc := mpvInitialize(h); rc < 0 {
 		mpvDestroy(h)
 		return nil, fmt.Errorf("mpv_initialize: %s", errString(rc))
 	}
 	mpvRequestLog(h, "error")
-	// Mouse and keyboard events inside the video window come back to us as
-	// client messages, because the video window is owned by libmpv.
-	mpvCommand(h, "keybind", "MBTN_LEFT_DBL", "script-message tcv-toggle")
-	mpvCommand(h, "keybind", "ESC", "script-message tcv-back")
-	mpvCommand(h, "keybind", "MBTN_RIGHT", "script-message tcv-menu")
-	mpvCommand(h, "keybind", "MBTN_LEFT", "script-message tcv-click") // the window checks if the contrast button was hit
-	mpvCommand(h, "keybind", "WHEEL_UP", "script-message tcv-zoomin")
-	mpvCommand(h, "keybind", "WHEEL_DOWN", "script-message tcv-zoomout")
+	// There is no libmpv window: mouse and keys go to our cell window directly.
+	if err := i.startRender(); err != nil {
+		mpvDestroy(h)
+		return nil, err
+	}
+	// Only now: with force-window set before mpv_initialize, mpv opened the
+	// video output before the render context existed ("Error opening/initializing
+	// the VO window"). It keeps a black picture with the OSD while not playing.
+	mpvCommand(h, "set", "force-window", "yes")
 
 	go i.loop()
 	i.connect()
@@ -144,19 +148,17 @@ var options = [][2]string{
 	{"ytdl", "no"},
 	{"terminal", "no"},
 	{"idle", "yes"}, // keep the player alive between connection attempts
-	{"force-window", "yes"},
+	// force-window is set after the render context exists (see New).
 	{"title", "Tiny Cam Viewer"},
 	{"profile", "fast,low-latency"},
-	{"vo", "gpu"},
-	{"gpu-api", "d3d11"},
-	{"hwdec", "auto"},
-	// RAM: by default libavcodec starts about one decoder thread per CPU core
-	// (20 here), each with its own decoder context. The GPU decodes the small
-	// grid stream, so one thread is enough. Saves only ~40 MB for 8 cameras:
-	// most of the ~700 MB is one D3D11 device (NVIDIA driver state) per player.
-	// Keep the default hwdec-extra-frames: too few frames can give broken pictures.
-	{"vd-lavc-threads", "1"},
-	{"keepaspect", "yes"}, // preserve video aspect ratio with letterboxing
+	// RAM: no GPU per camera. vo=libmpv + the "sw" render API (render.go), and
+	// the small grid streams are decoded on the CPU (hwdec=no). Only the
+	// fullscreen stream uses hardware decoding (connect sets hwdec=auto-copy).
+	// Measured with 8 cameras: vo=gpu+hwdec 713 MB, this way ~210 MB.
+	{"vo", "libmpv"},
+	{"hwdec", "no"},
+	{"vd-lavc-threads", "2"}, // default = one thread per CPU core (20) per camera
+	{"keepaspect", "yes"},    // preserve video aspect ratio with letterboxing
 	{"rtsp-transport", "tcp"},
 	{"aid", "no"},
 	{"ao", "null"},
@@ -222,8 +224,13 @@ func (i *Instance) connect() {
 		st = Reconnecting
 	}
 	url, ar := i.current()
+	hw := "no" // grid: CPU decoding, no GPU device per camera
+	if i.full && i.fullURL != "" {
+		hw = "auto-copy" // big stream: one GPU decoder, frames copied back for the sw renderer
+	}
 	i.mu.Unlock()
 	i.setState(st, "")
+	mpvCommand(i.h, "set", "hwdec", hw)
 	if rc := mpvCommand(i.h, "loadfile", url, "replace"); rc < 0 {
 		i.fail("loadfile: " + errString(rc))
 	}
@@ -234,7 +241,7 @@ func (i *Instance) connect() {
 }
 
 // SetPicture changes brightness and contrast (-100..100) at once.
-// libmpv keeps these values when the stream is restarted.
+// libmpv keeps the filter when the stream is restarted.
 func (i *Instance) SetPicture(brightness, contrast int) {
 	i.mu.Lock()
 	closing := i.closing
@@ -242,8 +249,24 @@ func (i *Instance) SetPicture(brightness, contrast int) {
 	if closing {
 		return
 	}
-	mpvCommand(i.h, "set", "brightness", strconv.Itoa(brightness))
-	mpvCommand(i.h, "set", "contrast", strconv.Itoa(contrast))
+	mpvCommand(i.h, "set", "vf", eqFilter(brightness, contrast))
+}
+
+// eqFilter is the video filter for brightness and contrast (-100..100).
+// The sw renderer has no equalizer (vo=gpu had one), so a libavfilter look-up
+// table changes the luma on the CPU (cheap on the small grid streams). The
+// "eq" filter is GPL and not in this libmpv build; "lutyuv" is LGPL.
+// Same scale as mpv's equalizer: contrast multiplies by (c+100)/100 around
+// black (16), brightness adds b/100 of the luma range (219). lut clips the
+// result to the valid range. The expression has no commas (lavfi graph syntax).
+// 0/0 = no filter at all.
+func eqFilter(brightness, contrast int) string {
+	if brightness == 0 && contrast == 0 {
+		return ""
+	}
+	c := float64(contrast+100) / 100
+	k := 16 - 16*c + float64(brightness)/100*219
+	return fmt.Sprintf("@eq:lavfi=[lutyuv=y=%.4f*val%+.2f]", c, k)
 }
 
 // SetFull switches between the grid stream and the fullscreen stream.
@@ -429,6 +452,7 @@ func (i *Instance) Stop() {
 func (i *Instance) Destroy() {
 	select {
 	case <-i.done:
+		i.stopRender() // the render context must be freed before the core
 		mpvDestroy(i.h)
 	case <-time.After(3 * time.Second):
 		i.logf("player did not stop in time")

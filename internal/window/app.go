@@ -784,6 +784,8 @@ func cellProc(hwnd, m, w, l uintptr) uintptr {
 			postMessage(a.hwnd, wmAppAction, 0, actBack)
 		}
 		return 0
+	case wmEraseBkgnd:
+		return 1 // paintCell fills the whole cell (no flicker between frames)
 	case wmPaint:
 		idx, _, _ := pGetWindowLongPtr.Call(hwnd, userData)
 		a.paintCell(hwnd, int(idx))
@@ -792,14 +794,23 @@ func cellProc(hwnd, m, w, l uintptr) uintptr {
 	return defWindowProc(hwnd, m, w, l)
 }
 
-// paintCell draws the camera number and the status. It is only visible while
-// libmpv has no video window in the cell (no player, or the player is starting);
-// the player shows the same text itself through its OSD.
+// paintCell draws the last picture of the player (video + OSD, rendered by
+// libmpv into memory, see player/render.go). Before the first picture it draws
+// the camera number and the status itself. New pictures are drawn by the
+// player's render goroutine directly; this is only for WM_PAINT.
 func (a *app) paintCell(hwnd uintptr, idx int) {
 	var ps paintStruct
 	hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 	defer pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+	rc := clientRect(hwnd)
+	pFillRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), a.blackBr)
 	if idx < 0 || idx >= len(a.slots) {
+		return
+	}
+	a.mu.Lock()
+	inst := a.slots[idx].inst
+	a.mu.Unlock()
+	if inst != nil && inst.PaintFrame(hdc) {
 		return
 	}
 	st, detail := a.status(idx)

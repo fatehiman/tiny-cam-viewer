@@ -50,6 +50,12 @@ var (
 	pWakeup         *windows.LazyProc
 	pErrorString    *windows.LazyProc
 	pRequestLog     *windows.LazyProc
+
+	pRenderCreate  *windows.LazyProc
+	pRenderSetCb   *windows.LazyProc
+	pRenderUpdate  *windows.LazyProc
+	pRenderRender  *windows.LazyProc
+	pRenderFreeCtx *windows.LazyProc
 )
 
 // Load loads libmpv from an absolute path.
@@ -70,8 +76,14 @@ func Load(path string) error {
 	pWakeup = get("mpv_wakeup")
 	pErrorString = get("mpv_error_string")
 	pRequestLog = get("mpv_request_log_messages")
+	pRenderCreate = get("mpv_render_context_create")
+	pRenderSetCb = get("mpv_render_context_set_update_callback")
+	pRenderUpdate = get("mpv_render_context_update")
+	pRenderRender = get("mpv_render_context_render")
+	pRenderFreeCtx = get("mpv_render_context_free")
 	for _, p := range []*windows.LazyProc{pCreate, pInitialize, pTerminate, pSetOptionStr,
-		pCommand, pGetPropertyStr, pFree, pWaitEvent, pWakeup, pErrorString, pRequestLog} {
+		pCommand, pGetPropertyStr, pFree, pWaitEvent, pWakeup, pErrorString, pRequestLog,
+		pRenderCreate, pRenderSetCb, pRenderUpdate, pRenderRender, pRenderFreeCtx} {
 		if err := p.Find(); err != nil {
 			return err
 		}
@@ -151,6 +163,25 @@ func mpvDestroy(h uintptr) { pTerminate.Call(h) }
 func mpvRequestLog(h uintptr, level string) {
 	pRequestLog.Call(h, uintptr(unsafe.Pointer(cstr(level))))
 }
+
+func mpvRenderCreate(ctx *uintptr, h uintptr, params *renderParam) int32 {
+	r, _, _ := pRenderCreate.Call(uintptr(unsafe.Pointer(ctx)), h, uintptr(unsafe.Pointer(params)))
+	return int32(r)
+}
+
+func mpvRenderSetUpdateCallback(ctx, cb, data uintptr) { pRenderSetCb.Call(ctx, cb, data) }
+
+func mpvRenderUpdate(ctx uintptr) uint64 {
+	r, _, _ := pRenderUpdate.Call(ctx)
+	return uint64(r)
+}
+
+func mpvRender(ctx uintptr, params *renderParam) int32 {
+	r, _, _ := pRenderRender.Call(ctx, uintptr(unsafe.Pointer(params)))
+	return int32(r)
+}
+
+func mpvRenderFree(ctx uintptr) { pRenderFreeCtx.Call(ctx) }
 
 // event is a copy of the fields we need from mpv_event.
 type event struct {
